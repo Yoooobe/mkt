@@ -4,6 +4,9 @@ MVP local em `http://localhost:8377` usando FastAPI, SQLite e JavaScript simples
 O sistema gerencia contatos, tags, campanhas, templates, fila de envio, respostas,
 bounces e tracking opcional de abertura/clique.
 
+Para a separacao entre material publico, arquivos de exemplo e dados privados,
+veja o README da raiz do repositório.
+
 ## Subir
 ```bash
 pip3 install --user -r dashboard/requirements.txt
@@ -16,6 +19,12 @@ open http://localhost:8377
 Início, Campanhas, CRM, Qualidade, Respostas, Remetentes, Templates, Métricas e
 Contexto IA. Os KBs iniciais ficam em `dashboard/context/kb/` e orientam a IA para
 reward infrastructure, gamificação, carteiras, loja corporativa, API, fulfillment e ROI.
+
+## Arquivos de apoio
+
+- `dashboard/.env.example` é o modelo para configurar variáveis locais.
+- `dashboard/.env` fica fora do Git e não deve ser publicado.
+- `dashboard/*.db` e `dashboard/logs/` são dados locais de execução.
 
 ## Guardrails
 - Campanhas nascem em rascunho e só enviam depois de ativação explícita.
