@@ -1,0 +1,39 @@
+.DS_Store
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Credenciais e estados locais
+dashboard/.env
+zapi-config.env
+proposals/monitor_config.env
+tracking-worker/.dev.vars
+tracking-worker/.wrangler/
+.claude/
+gws_accounts/
+
+# Dados operacionais
+dashboard/*.db
+dashboard/*.db-shm
+dashboard/*.db-wal
+dashboard/logs/
+dashboard/out/
+*.log
+*.csv
+*.xlsx
+proposals/raw_*.json
+proposals/msg_*.txt
+proposals/*.html
+proposals/sent_log.txt
+proposals/monitor_state/
+bases_leads/
+client_secret_*.json
+*.db
+*.db-shm
+*.db-wal
+
+# Pacotes gerados
+*.zip

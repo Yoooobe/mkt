@@ -1,0 +1,16 @@
+name = "4unik-mail-tracking"
+main = "src/index.js"
+compatibility_date = "2026-06-12"
+
+# Domínio próprio melhora entregabilidade (vs *.workers.dev). Descomente após
+# apontar a rota no painel Cloudflare (zona 4unik):
+# routes = [{ pattern = "t.4unik.com.br", custom_domain = true }]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "4unik_mail_tracking"
+database_id = "COLE_O_DATABASE_ID_DO_D1_AQUI"
+
+# Segredos (produção) via:  npx wrangler secret put TRACKING_SECRET  / TRACKING_SYNC_KEY
+# Mesmos valores em dashboard/.env. Para `wrangler dev` local, crie um .dev.vars
+# com TRACKING_SECRET=... e TRACKING_SYNC_KEY=... (não versionado).

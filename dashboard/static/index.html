@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4unik.mail — email marketing com IA</title>
+<link rel="icon" href="/favicon.ico">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css?v=20260715-contact-workspace">
+</head>
+<body>
+<header class="topbar">
+  <div class="logo">4unik<span>.mail</span></div>
+  <nav id="nav">
+    <a href="#/inicio" data-r="inicio">Início</a>
+    <a href="#/campanhas" data-r="campanhas">Campanhas</a>
+    <a href="#/crm" data-r="crm">CRM</a>
+    <a href="#/nomes" data-r="nomes">Qualidade</a>
+    <a href="#/respostas" data-r="respostas">Respostas</a>
+    <a href="#/remetentes" data-r="remetentes">Remetentes</a>
+    <a href="#/templates" data-r="templates">Templates</a>
+    <a href="#/metricas" data-r="metricas">Métricas</a>
+    <a href="#/site" data-r="site">Site & Ads</a>
+    <a href="#/midia" data-r="midia">Mídia & Google</a>
+    <a href="#/contexto" data-r="contexto">Contexto IA</a>
+  </nav>
+  <span id="chip" class="statuschip ok">…</span>
+</header>
+<main id="view"></main>
+<div id="toast"></div>
+
+<dialog id="dlg-campanha">
+  <h3 id="nc-title">✨ Nova campanha com IA</h3>
+  <p class="muted" id="nc-sub">Descreva o objetivo em texto livre. A IA usa seus KBs e imagens do
+  Contexto para redigir os emails — tudo nasce em <b>rascunho</b> e nada é enviado sem
+  sua aprovação e ativação.</p>
+  <div class="field" id="nc-nome-field" style="display:none"><label>Nome da campanha</label>
+    <input id="nc-nome" style="width:100%"></div>
+  <div class="field"><label>Remetente (de qual conta sai a campanha)</label>
+    <select id="nc-sender" style="width:100%"><option>carregando…</option></select>
+    <small class="muted" id="nc-sender-hint"></small></div>
+  <div class="field" id="nc-objetivo-field"><label>Objetivo da campanha</label>
+    <textarea id="nc-objetivo" rows="3" placeholder="Ex.: nutrir os leads frios de 2023-24 com cases e fechar reuniões no Calendly"></textarea></div>
+  <div class="row">
+    <div class="field"><label>Tipo</label>
+      <select id="nc-tipo">
+        <option value="finita">Finita (sequência única)</option>
+        <option value="infinita">Infinita (ciclo contínuo)</option>
+      </select></div>
+    <div class="field" id="nc-n-field"><label>Nº de emails</label>
+      <input id="nc-n" type="number" value="3" min="1" max="8" style="width:70px"></div>
+    <div class="field"><label>Cadência aleatória (X a Y dias)</label>
+      <input id="nc-min" type="number" placeholder="min" min="1" style="width:64px">
+      <input id="nc-max" type="number" placeholder="max" min="1" style="width:64px"></div>
+  </div>
+  <div class="field"><label>📅 Data/hora do primeiro envio (opcional)</label>
+    <input id="nc-inicio" type="datetime-local" style="width:230px">
+    <small class="muted">Vazio = começa assim que você ativar. A cadência X–Y dias vale para os próximos emails. (Respeita seg–sex 9h–18h.)</small></div>
+  <div class="field"><label>Segmentos da base</label>
+    <label style="font-weight:400"><input type="checkbox" class="nc-seg" value="quente" checked> quente (2026)</label>
+    <label style="font-weight:400"><input type="checkbox" class="nc-seg" value="morno" checked> morno (2025)</label>
+    <label style="font-weight:400"><input type="checkbox" class="nc-seg" value="frio" checked> frio (2023-24)</label>
+    &nbsp;·&nbsp;
+    <label style="font-weight:400"><input type="checkbox" id="nc-semresp" checked> só quem nunca respondeu</label>
+  </div>
+  <div class="field"><label>🎯 Segmento inteligente</label>
+    <select id="nc-perfil" style="width:100%"><option value="">Todos os leads elegíveis</option></select>
+    <small class="muted" id="nc-perfil-hint">Prioriza contatos úteis para o objetivo sem expor dados individuais à IA.</small></div>
+  <div class="field"><label>Tags (opcional — inclui só quem tiver alguma destas)</label>
+    <div id="nc-tags" class="tagpick"><span class="muted">carregando…</span></div></div>
+  <div class="field" style="background:#f7f9fa;border-radius:9px;padding:9px 12px">
+    🎯 <b id="nc-count">—</b> contato(s) entram nesta campanha</div>
+  <div class="toolbar"><span class="sp"></span>
+    <button onclick="document.getElementById('dlg-campanha').close()">Cancelar</button>
+    <button class="primary" id="nc-criar">Criar com IA</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-editar-campanha">
+  <h3>✏️ Editar campanha</h3>
+  <p class="muted">Atualize o planejamento. A audiência e os e-mails já criados não são alterados aqui.</p>
+  <div class="field"><label>Nome da campanha</label><input id="ec-nome" style="width:100%"></div>
+  <div class="field"><label>Objetivo</label><textarea id="ec-objetivo" rows="3" style="width:100%"></textarea></div>
+  <div class="field"><label>Remetente</label><select id="ec-sender" style="width:100%"></select></div>
+  <div class="row">
+    <div class="field"><label>Tipo</label><select id="ec-tipo"><option value="finita">Finita (sequência única)</option><option value="infinita">Infinita (ciclo contínuo)</option></select></div>
+    <div class="field"><label>Cadência (X a Y dias)</label><input id="ec-min" type="number" min="1" placeholder="min" style="width:64px"> <input id="ec-max" type="number" min="1" placeholder="max" style="width:64px"></div>
+  </div>
+  <div class="field"><label>1º envio (opcional)</label><input id="ec-inicio" type="datetime-local" style="width:230px"><small class="muted">Vazio = começa quando ativar.</small></div>
+  <div class="toolbar"><span class="sp"></span><button onclick="document.getElementById('dlg-editar-campanha').close()">Cancelar</button><button class="primary" id="ec-salvar">Salvar alterações</button></div>
+</dialog>
+
+<dialog id="dlg-template">
+  <h3>✨ Novo template com IA</h3>
+  <p class="muted">A IA redige com base no Contexto e o template nasce <b>pendente</b> —
+  revise o preview e aprove antes de usar em qualquer envio.</p>
+  <div class="field"><label>Briefing</label>
+    <textarea id="nt-briefing" rows="4" placeholder="Ex.: email curto convidando para ver o vídeo do Power PAP, tom direto, CTA para o Calendly"></textarea></div>
+  <div class="toolbar"><span class="sp"></span>
+    <button onclick="document.getElementById('dlg-template').close()">Cancelar</button>
+    <button class="primary" id="nt-criar">Criar com IA</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-kb">
+  <h3>📚 Novo KB de contexto</h3>
+  <div class="field"><label>Nome do arquivo</label>
+    <input id="kb-nome" placeholder="ex: casos-de-sucesso.md" style="width:100%"></div>
+  <div class="field"><label>Conteúdo (markdown)</label>
+    <textarea id="kb-conteudo" rows="10"></textarea></div>
+  <div class="toolbar"><span class="sp"></span>
+    <button onclick="document.getElementById('dlg-kb').close()">Cancelar</button>
+    <button class="primary" id="kb-salvar">Salvar</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-contato">
+  <h3>➕ Novo contato</h3>
+  <p class="muted" style="margin-top:0">Cadastra um contato no CRM. Se o e-mail já existir, atualiza os dados (dedup por e-mail).</p>
+  <div class="field"><label>E-mail *</label>
+    <input id="ct-email" type="email" placeholder="contato@empresa.com.br" style="width:100%"></div>
+  <div class="row">
+    <div class="field grow"><label>Nome</label><input id="ct-nome" style="width:100%"></div>
+    <div class="field grow"><label>Empresa</label><input id="ct-empresa" style="width:100%"></div>
+    <div class="field grow"><label>Telefone / WhatsApp</label><input id="ct-telefone" type="tel" placeholder="(11) 99999-9999" style="width:100%"></div>
+  </div>
+  <div class="row">
+    <div class="field grow"><label>Módulos</label><input id="ct-modulos" placeholder="Presença Digital | Mais Indicações" style="width:100%"></div>
+    <div class="field"><label>Segmento</label>
+      <select id="ct-segmento"><option value="">—</option><option value="quente">quente</option><option value="morno">morno</option><option value="frio">frio</option></select></div>
+    <div class="field"><label>Respondeu?</label>
+      <select id="ct-respondeu"><option value="não">não</option><option value="sim">sim</option></select></div>
+  </div>
+  <div class="row">
+    <div class="field grow"><label>Cargo / persona</label><input id="ct-cargo" style="width:100%"></div>
+    <div class="field grow"><label>Porte (colaboradores)</label><input id="ct-porte" placeholder="Ex.: 51–200" style="width:100%"></div>
+    <div class="field grow"><label>ERP / stack</label><input id="ct-erp" placeholder="Ex.: SAP, Totvs" style="width:100%"></div>
+  </div>
+  <div class="row">
+    <div class="field grow"><label>Etapa do funil</label><input id="ct-etapa" placeholder="Ex.: diagnóstico" style="width:100%"></div>
+    <div class="field grow"><label>Qualificação</label><input id="ct-qualificacao" placeholder="Ex.: ICP / prioridade" style="width:100%"></div>
+    <div class="field grow"><label>Motivo de perda</label><input id="ct-motivo-perda" style="width:100%"></div>
+  </div>
+  <div class="field"><label>Histórico / observações comerciais</label>
+    <textarea id="ct-enriquecimento" rows="3" placeholder="Contexto útil para o time comercial (não é usado como dado individual na geração de copy)." style="width:100%"></textarea></div>
+  <div class="row">
+    <div class="field grow"><label>Mensalidades</label><input id="ct-mensalidades" placeholder="R$ 599; R$ 999" style="width:100%"></div>
+    <div class="field grow"><label>Setup</label><input id="ct-setup" placeholder="R$ 599" style="width:100%"></div>
+    <div class="field"><label>Validade</label><input id="ct-validade" placeholder="dd/mm/aaaa"></div>
+  </div>
+  <div class="row">
+    <div class="field grow"><label>Tags (separadas por vírgula)</label><input id="ct-tags" placeholder="lead, teste" style="width:100%"></div>
+    <div class="field"><label>Origem</label><input id="ct-origem" value="manual"></div>
+  </div>
+  <div class="toolbar"><span class="sp"></span>
+    <button onclick="document.getElementById('dlg-contato').close()">Cancelar</button>
+    <button class="primary" id="ct-salvar">Salvar contato</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-detalhe">
+  <div class="toolbar" style="margin-top:0">
+    <h3 id="det-titulo" style="margin:0">Detalhe</h3>
+    <span class="muted" id="det-count" style="margin-left:8px"></span>
+    <span class="sp"></span>
+    <button onclick="document.getElementById('dlg-detalhe').close()">Fechar</button>
+  </div>
+  <div id="det-body" style="max-height:60vh;overflow:auto"></div>
+</dialog>
+
+<script>window.API_KEY = "__API_KEY__";</script>
+<!-- Versão no URL evita que o navegador reaproveite uma tela antiga após atualizações locais. -->
+<script src="/static/app.js?v=20260715-google-tags-site"></script>
+</body>
+</html>
