@@ -169,5 +169,10 @@ Confira também `npx wrangler tail` para ver os logs do entrypoint
 - GA4/Z-API na nuvem: adicionar os secrets opcionais (passo 3) se necessário.
 - Desativar o LaunchAgent local (`com.4unik.mail`) quando a nuvem virar a
   instância oficial — nunca rodar os dois replicando o mesmo caminho do R2.
-- Proteger a URL pública: as rotas `/api/*` exigem `X-API-Key`, mas o HTML do
-  dashboard é servido sem auth — considere Cloudflare Access na frente do Worker.
+- ~~Proteger a URL pública~~ — **feito**: Cloudflare Access (Zero Trust, org
+  `genau-4unik.cloudflareaccess.com`) na frente do Worker, com login One-Time
+  PIN por e-mail e política de allow-list (genaujunior@gmail.com,
+  comercial@4unik.com.br, marketing@4unik.com.br). O HTML embute a API key,
+  então quem loga usa o dashboard direto; para adicionar/remover pessoas,
+  edite a política em Zero Trust → Access → Applications → "4unik.mail
+  dashboard". Acesso programático externo exige um Service Token do Access.
