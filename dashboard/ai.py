@@ -233,16 +233,21 @@ RESPOSTA DO LEAD:
         return None
 
 
-def _fmt_cohort(p):
+def _fmt_cohort(p, audience_profile=""):
     """Formata o resumo da audiência (db.resumo_audiencia) como briefing legível para a IA."""
     if not p or not p.get("total"):
         return "público ainda sem dados de enriquecimento — escreva de forma genérica para empresas B2B, RH, SaaS e operacoes com programas de incentivo."
 
     def lst(key):
         return ", ".join(f"{x['valor']} ({x['n']})" for x in p.get(key, [])) or "—"
+    perfil = f"Perfil de audiência selecionado no dashboard: {audience_profile}. " if audience_profile else ""
     return (f"{p['total']} contatos (empresas com programas de recompensas, RH, employee experience, vendas e plataformas SaaS). "
+            f"{perfil}"
+            f"Temperatura (quente/morno/frio): {lst('temperatura')}; dominante: "
+            f"{p.get('temperatura_dominante') or 'indefinida'}. "
             f"Porte/tamanho: {lst('porte')}. Sistemas/stack: {lst('erp')}. "
-            f"Cargo/persona: {lst('cargo')}. Estágio: {lst('estado')}. "
+            f"Cargo/persona: {lst('cargo')}. Estágio do negócio: {lst('estado')}. "
+            f"Etapa de funil (CRM): {lst('etapa_funil')}. "
             f"Qualificação: {lst('qualificacao')}. Motivo de perda: {lst('motivo_perda')}. "
             f"Origem: {lst('origem')}. Já fizeram demonstração: {p.get('fez_demo', 0)}. "
             f"Histórico agregado: {p.get('ja_contatados', 0)} já receberam e-mail; "
@@ -302,12 +307,71 @@ REGRA_PUBLICO = ("REGRA DE PÚBLICO (NUNCA violar): prospecção NÃO tem como a
                  "4Unik. Escreva como abordagem a EMPRESAS B2B que ainda não são clientes.")
 
 
-def _plano_campanha(objetivo, n_emails, tipo, cadencia, kb, brief):
+# Mapa segmento → estratégia de copy (temperatura dominante do cohort define o bloco
+# injetado no planejamento e em cada email). Os baits são ganchos de engajamento,
+# nunca promessas: tudo que for oferta/prova continua limitado ao que está nos KBs.
+ESTRATEGIA_FUNIL = {
+    "frio": {
+        "rotulo": "FRIO / topo de funil (TOF) — o lead não lembra da 4Unik",
+        "diretrizes": (
+            "- Abra com pattern interrupt: primeira linha inesperada, específica e curta; nada de 'espero que esteja bem'.\n"
+            "- Gancho de curiosidade ou guerrilha: contraste provocador, pergunta incômoda sobre a operação, benchmark do setor.\n"
+            "- Use baits de engajamento leves: 'responda com X e te mando Y', mini-diagnóstico gratuito, benchmark comparativo.\n"
+            "- ZERO pressão de demo no 1º email: o CTA inicial pede micro-compromisso (responder, ver benchmark), não agenda.\n"
+            "- Tom: curioso e generoso; eduque antes de vender."),
+        "cadencia": ("E1 pattern interrupt + dor latente, CTA de micro-compromisso (sem demo) → "
+                     "E2 como a solução funciona, ancorada na dor do E1 → "
+                     "E3 prova/benchmark ou hipótese rotulada + bait de resposta → "
+                     "E4 gancho vertical (recorte por setor/persona) e último toque, CTA leve de conversa"),
+    },
+    "morno": {
+        "rotulo": "MORNO / meio de funil (MOF) — já houve contato, falta convicção",
+        "diretrizes": (
+            "- Lidere com prova: caso, dado ou contraste antes/depois que esteja nos KBs (ou hipótese claramente rotulada).\n"
+            "- Quebre a objeção mais provável do cohort (integração, esforço de implantação, ROI incerto) de frente.\n"
+            "- Use bait de conteúdo: material, comparativo ou diagnóstico que aprofunde a conversa.\n"
+            "- CTA intermediário: convite para ver algo concreto (walkthrough, benchmark), demo só como opção natural.\n"
+            "- Tom: consultivo; retome o contexto sem soar cobrança."),
+        "cadencia": ("E1 reabertura com prova ou contraste antes/depois → "
+                     "E2 quebra da objeção dominante com mecânica concreta → "
+                     "E3 caso/ROI com premissas explícitas + bait de conteúdo → "
+                     "E4 recorte vertical/último toque com convite direto a conversa"),
+    },
+    "quente": {
+        "rotulo": "QUENTE / fundo de funil (BOF) — pronto para decisão",
+        "diretrizes": (
+            "- ROI concreto: números e premissas dos KBs, explicitando cada premissa; nunca retorno garantido.\n"
+            "- Urgência honesta: janela real (ciclo de implantação, planejamento de trimestre), sem escassez fabricada.\n"
+            "- Ataque a objeção final (preço, timing, aprovação interna) com resposta objetiva.\n"
+            "- CTA direto de demo/agenda (Calendly/WhatsApp) em TODOS os emails, sem rodeio.\n"
+            "- Tom: direto e respeitoso do tempo do lead; emails mais curtos."),
+        "cadencia": ("E1 dor já validada + ROI concreto com premissas, CTA de agenda → "
+                     "E2 mecânica da solução e esforço real de implantação → "
+                     "E3 prova/ROI aprofundado + quebra da objeção final → "
+                     "E4 último toque vertical, urgência honesta e CTA direto de demo"),
+    },
+}
+
+
+def _estrategia_bloco(temperatura):
+    """Bloco de estratégia por temperatura dominante do cohort, injetado nos prompts.
+    Sem temperatura conhecida, assume 'frio' (abordagem mais conservadora)."""
+    e = ESTRATEGIA_FUNIL.get((temperatura or "").strip().lower()) or ESTRATEGIA_FUNIL["frio"]
+    return (f"ESTRATÉGIA DO SEGMENTO — público dominante: {e['rotulo']}\n"
+            f"{e['diretrizes']}\n"
+            f"ESQUELETO DE CADÊNCIA (adapte ao nº de emails da campanha; base: "
+            f"E1 dor/gancho → E2 solução → E3 prova/ROI → E4 vertical/último toque):\n"
+            f"{e['cadencia']}")
+
+
+def _plano_campanha(objetivo, n_emails, tipo, cadencia, kb, brief, temperatura=""):
     """1ª chamada (leve): só o esqueleto — nome, resumo e o ângulo de cada email. Rápida."""
     tipo_desc = "os emails se repetem em ciclo contínuo" if tipo == "infinita" else "sequência única"
+    estrategia = _estrategia_bloco(temperatura)
     return _claude_json(f"""Você é o estrategista de email marketing da 4Unik (Time 4Unik).
 PLANEJE (NÃO escreva os emails ainda) uma campanha de {n_emails} emails. Tipo: {tipo} ({tipo_desc}). {cadencia}.
 Distribua a mensagem do início ao fim, em ordem estratégica, SEM repetir ângulos entre os emails.
+Siga o ESQUELETO DE CADÊNCIA da estratégia do segmento abaixo, adaptando-o ao nº de emails.
 Devolva SOMENTE JSON válido, sem markdown:
 {{"nome": "nome da campanha", "resumo": "1 frase",
  "insight_gtm": {{"icp":"persona e dor", "gancho":"ângulo de entrada", "prova":"case/dado ou hipótese rotulada", "cta":"CTA", "evento_ga4":"um evento permitido", "utm_source":"4unik-mail", "utm_medium":"email"}},
@@ -319,6 +383,8 @@ CONTEXTO (KBs da 4Unik):
 PERFIL DO PÚBLICO (cohort):
 {brief}
 
+{estrategia}
+
 {REGRA_PUBLICO}
 
 {GUIA_GTM_CAMPANHAS}
@@ -326,13 +392,20 @@ PERFIL DO PÚBLICO (cohort):
 OBJETIVO DA CAMPANHA: {objetivo}""", timeout=180)
 
 
-def _gerar_email(objetivo, e, todos_angulos, ordem, n, kb, imgs, brief):
+def _gerar_email(objetivo, e, todos_angulos, ordem, n, kb, imgs, brief, estrategia):
     """2ª..N+1ª chamadas (uma por email): escreve UM email completo. Cada uma pequena/rápida."""
     return _claude_json(f"""Você é o copywriter da 4Unik (Time 4Unik). Escreva O EMAIL {ordem} DE {n} de uma campanha.
 Devolva SOMENTE JSON válido, sem markdown:
-{{"assunto": "...", "preheader": "...", "cta": "rótulo do botão",
+{{"assunto": "assunto principal",
+ "assuntos_alternativos": ["variante com abordagem de CURIOSIDADE",
+   "variante com ESPECIFICIDADE NUMÉRICA ou GUERRILHA/CONTRASTE"],
+ "preheader": "...", "cta": "rótulo do botão",
  "cta_url": "url do CTA (Calendly/WhatsApp do contexto, ou vazio)",
  "inner_html": "HTML do miolo", "texto_plano": "versão text/plain completa"}}
+
+REGRA DOS ASSUNTOS: além do assunto principal, escreva EXATAMENTE 2 variantes com abordagens
+DISTINTAS entre si e do principal (curiosidade, especificidade numérica, guerrilha/contraste).
+Números só se vierem do contexto/KBs. Todas devem funcionar para o mesmo corpo de email.
 
 {GUIA_HTML}
 
@@ -343,6 +416,8 @@ IMAGENS DISPONÍVEIS: {', '.join(imgs) or 'nenhuma'}
 
 PERFIL DO PÚBLICO (cohort) — escreva a copy SOB MEDIDA para este perfil:
 {brief}
+
+{estrategia}
 
 VARIÁVEIS DE PERSONALIZAÇÃO (use só as que fizerem sentido para um público homogêneo):
 {{{{nome}}}}, {{{{empresa}}}}, {{{{cargo}}}}, {{{{porte}}}} (ex.: "Até 500 colaboradores"), {{{{erp}}}}.
@@ -356,6 +431,44 @@ SEQUÊNCIA COMPLETA (para você NÃO repetir o que vai nos outros emails):
 
 >>> ESTE É O EMAIL {ordem}: "{e.get('nome', '')}" — ângulo: {e.get('angulo', '')}
 OBJETIVO GERAL DA CAMPANHA: {objetivo}""", timeout=240)
+
+
+def _revisar_email(email_json, estrategia, brief):
+    """Passo de crítica (editor-chefe): avalia gancho, aderência ao funil/segmento, CTA e
+    clareza; pode reescrever assunto/preheader/cta e ajustar o texto. Uma chamada por email.
+    Qualquer falha (exceção, JSON incompleto) devolve o email original — nunca quebra o build."""
+    try:
+        rev = _claude_json(f"""Você é o editor-chefe de email marketing da 4Unik (Time 4Unik).
+Revise o email abaixo como um editor exigente. Avalie:
+1. GANCHO: o assunto e a primeira linha param o scroll? São específicos, não genéricos?
+2. FUNIL/SEGMENTO: a copy respeita a estratégia do segmento abaixo (pressão de CTA, tom, baits)?
+3. CTA: único, coerente com a etapa, rótulo acionável?
+4. CLAREZA: frases curtas, sem jargão vazio, benefício concreto?
+Reescreva o que estiver fraco (assunto, assuntos_alternativos, preheader, cta e ajustes no texto).
+Se já estiver forte, devolva-o como está. NÃO acrescente fatos, preços, cases ou números novos;
+preserve as variáveis {{{{nome}}}}, {{{{empresa}}}} etc. e o estilo inline do HTML.
+Devolva SOMENTE JSON válido, sem markdown, no MESMO formato do email (campos: assunto,
+assuntos_alternativos, preheader, cta, cta_url, inner_html, texto_plano).
+
+{estrategia}
+
+{REGRA_PUBLICO}
+
+{GUIA_GTM_CAMPANHAS}
+
+PERFIL DO PÚBLICO (cohort):
+{brief}
+
+EMAIL A REVISAR:
+{json.dumps(email_json, ensure_ascii=False)}""", timeout=240)
+        if not isinstance(rev, dict) or not (rev.get("assunto") and rev.get("inner_html")
+                                             and rev.get("texto_plano")):
+            return email_json
+        # campos ausentes na revisão herdam o original (revisão parcial não perde conteúdo)
+        return {**email_json, **{k: v for k, v in rev.items() if v}}
+    except Exception as ex:
+        print(f"[revisão de email] falhou, mantendo original: {ex}", flush=True)
+        return email_json
 
 
 def _steps_existentes(cid):
@@ -375,9 +488,10 @@ def _geracao_cancelada(cid):
     return p.get("status") == "erro" and p.get("etapa") == "pausada manualmente"
 
 
-def _gerar_loop(cid, objetivo, emails, cad_min, kb, imgs, brief):
+def _gerar_loop(cid, objetivo, emails, cad_min, kb, imgs, brief, temperatura=""):
     """Gera os emails do plano um a um, PULANDO os que já têm step salvo (retomada idempotente).
     Compartilhado pelo build inicial e pela retomada — continua de onde a campanha parou."""
+    estrategia = _estrategia_bloco(temperatura)
     angulos = "; ".join(f"{i}) {e.get('nome', '')}: {e.get('angulo', '')}"
                         for i, e in enumerate(emails, start=1))
     feitos = _steps_existentes(cid)
@@ -387,17 +501,25 @@ def _gerar_loop(cid, objetivo, emails, cad_min, kb, imgs, brief):
         e = emails[i - 1]
         _set_progress(cid, etapa=f"escrevendo e-mail {i} de {len(emails)}: {e.get('nome', '')}",
                       feitos=i - 1)
-        full = _gerar_email(objetivo, e, angulos, i, len(emails), kb, imgs, brief)
+        full = _gerar_email(objetivo, e, angulos, i, len(emails), kb, imgs, brief, estrategia)
+        if _geracao_cancelada(cid):
+            return False
+        _set_progress(cid, etapa=f"revisando gancho/CTA do e-mail {i} de {len(emails)}")
+        full = _revisar_email(full, estrategia, brief)
         # A chamada acima pode levar minutos. Revalida antes de qualquer escrita
         # para honrar uma pausa feita enquanto a IA estava trabalhando.
         if _geracao_cancelada(cid):
             return False
+        alts = full.get("assuntos_alternativos") or []
+        if not isinstance(alts, list):
+            alts = []
+        alts_json = json.dumps([str(a) for a in alts[:2]], ensure_ascii=False)
         c = db.conn()
-        c.execute("""INSERT INTO templates_ai(nome,assunto,preheader,cta,cta_url,inner_html,texto_plano,status,origem)
-                     VALUES(?,?,?,?,?,?,?,'pendente','ia')""",
+        c.execute("""INSERT INTO templates_ai(nome,assunto,preheader,cta,cta_url,inner_html,texto_plano,status,origem,assuntos_alt)
+                     VALUES(?,?,?,?,?,?,?,'pendente','ia',?)""",
                   (e.get("nome", f"Email {i}"), full.get("assunto", ""), full.get("preheader", ""),
                    full.get("cta", ""), full.get("cta_url", ""), full.get("inner_html", ""),
-                   full.get("texto_plano", "")))
+                   full.get("texto_plano", ""), alts_json))
         tid = c.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
         offset = e.get("offset_dias") if cad_min is None else None
         c.execute("INSERT INTO campaign_steps(campaign_id,ordem,template_ref,offset_dias) VALUES(?,?,?,?)",
@@ -416,11 +538,12 @@ def _cadencia_desc(cad_min, cad_max):
             if cad_min is not None else "cadência fixa (defina offset_dias por email)")
 
 
-def _build_worker(cid, objetivo, tipo, n_emails, cad_min, cad_max, kb, imgs, brief):
+def _build_worker(cid, objetivo, tipo, n_emails, cad_min, cad_max, kb, imgs, brief, temperatura=""):
     """Gera a campanha email-por-email em background (sem nunca estourar timeout)."""
     try:
         _set_progress(cid, status="gerando", total=n_emails, feitos=0, etapa="planejando a sequência…")
-        plano = _plano_campanha(objetivo, n_emails, tipo, _cadencia_desc(cad_min, cad_max), kb, brief)
+        plano = _plano_campanha(objetivo, n_emails, tipo, _cadencia_desc(cad_min, cad_max),
+                                kb, brief, temperatura)
         emails = (plano.get("emails") or [])[:n_emails]
         if not emails:
             raise RuntimeError("a IA não devolveu o plano de emails")
@@ -432,14 +555,15 @@ def _build_worker(cid, objetivo, tipo, n_emails, cad_min, cad_max, kb, imgs, bri
             f"Gancho: {insight.get('gancho', '')}" if insight.get("gancho") else "",
             f"Prova: {insight.get('prova', '')}" if insight.get("prova") else "",
             f"GA4: {insight.get('evento_ga4', '')}" if insight.get("evento_ga4") else "",
+            f"Segmento: {temperatura}" if temperatura else "",
         ) if x)
         c.execute("UPDATE campaigns SET nome=?, contexto=? WHERE id=?",
                   (plano.get("nome") or f"Campanha — {objetivo[:40]}", contexto, cid))
         c.commit()
         c.close()
         # persiste o plano (ângulos) p/ uma retomada futura ser exata (sem replanejar)
-        _set_progress(cid, total=len(emails), plano_emails=emails)
-        _gerar_loop(cid, objetivo, emails, cad_min, kb, imgs, brief)
+        _set_progress(cid, total=len(emails), plano_emails=emails, temperatura=temperatura)
+        _gerar_loop(cid, objetivo, emails, cad_min, kb, imgs, brief, temperatura)
     except Exception as ex:
         _set_progress(cid, status="erro", erro=str(ex)[:300], erro_tipo=_tipo_erro(str(ex)))
         print(f"[build campanha {cid}] ERRO: {ex}", flush=True)
@@ -459,20 +583,23 @@ def _resume_worker(cid):
         objetivo = camp["objetivo"] or ""
         cad_min = camp["cad_min_dias"]
         kb, imgs = contexto()
-        brief = _fmt_cohort(db.resumo_audiencia(emails_aud))
+        resumo = db.resumo_audiencia(emails_aud)
+        brief = _fmt_cohort(resumo, camp["audience_profile"] or "")
         prog = build_progress(cid) or {}
+        temperatura = prog.get("temperatura") or resumo.get("temperatura_dominante") or ""
         emails = prog.get("plano_emails")
         if not emails:
             total = prog.get("total") or max(1, _steps_existentes(cid))
             _set_progress(cid, status="gerando", etapa="replanejando a sequência…")
             plano = _plano_campanha(objetivo, total, camp["tipo"],
-                                    _cadencia_desc(cad_min, camp["cad_max_dias"]), kb, brief)
+                                    _cadencia_desc(cad_min, camp["cad_max_dias"]), kb, brief,
+                                    temperatura)
             emails = (plano.get("emails") or [])[:total]
             if not emails:
                 raise RuntimeError("a IA não devolveu o plano de emails")
-            _set_progress(cid, plano_emails=emails)
+            _set_progress(cid, plano_emails=emails, temperatura=temperatura)
         _set_progress(cid, status="gerando", total=len(emails), erro="", erro_tipo="")
-        _gerar_loop(cid, objetivo, emails, cad_min, kb, imgs, brief)
+        _gerar_loop(cid, objetivo, emails, cad_min, kb, imgs, brief, temperatura)
     except Exception as ex:
         _set_progress(cid, status="erro", erro=str(ex)[:300], erro_tipo=_tipo_erro(str(ex)))
         print(f"[retomada campanha {cid}] ERRO: {ex}", flush=True)
@@ -495,7 +622,9 @@ def criar_campanha(objetivo, tipo="finita", cad_min=None, cad_max=None,
     # resolve o público ANTES (clientes auto-excluídos por resolve_audience) p/ o briefing do cohort
     segs = segmentos if segmentos else ["quente", "morno", "frio"]
     audiencia = db.resolve_audience(segs, tags, apenas_sem_resposta, perfil=audience_profile)
-    brief = _fmt_cohort(db.resumo_audiencia(audiencia))
+    resumo = db.resumo_audiencia(audiencia)
+    brief = _fmt_cohort(resumo, audience_profile)
+    temperatura = resumo.get("temperatura_dominante") or ""
 
     c = db.conn()
     c.execute("""INSERT INTO campaigns(nome,objetivo,tipo,status,cad_min_dias,cad_max_dias,contexto,sender_id,inicio_em,audience_profile)
@@ -508,9 +637,11 @@ def criar_campanha(objetivo, tipo="finita", cad_min=None, cad_max=None,
     c.commit()
     c.close()
 
-    _set_progress(cid, status="gerando", total=n_emails, feitos=0, etapa="iniciando…")
+    _set_progress(cid, status="gerando", total=n_emails, feitos=0, etapa="iniciando…",
+                  temperatura=temperatura)
     threading.Thread(target=_build_worker,
-                     args=(cid, objetivo, tipo, n_emails, cad_min, cad_max, kb, imgs, brief),
+                     args=(cid, objetivo, tipo, n_emails, cad_min, cad_max, kb, imgs, brief,
+                           temperatura),
                      daemon=True).start()
     return cid
 
@@ -524,7 +655,9 @@ def criar_campanha_contato(email, objetivo, n_emails=3, sender_id=1, inicio_em="
         raise ValueError("contato não encontrado")
     n_emails = max(1, min(int(n_emails or 3), 10))
     kb, imgs = contexto()
-    brief = _fmt_cohort(db.resumo_audiencia([email]))
+    resumo = db.resumo_audiencia([email])
+    brief = _fmt_cohort(resumo, "contato_individual")
+    temperatura = resumo.get("temperatura_dominante") or (contato["segmento"] or "")
     c = db.conn()
     c.execute("""INSERT INTO campaigns(nome,objetivo,tipo,status,cad_min_dias,cad_max_dias,
                  contexto,sender_id,inicio_em,audience_profile)
@@ -536,9 +669,11 @@ def criar_campanha_contato(email, objetivo, n_emails=3, sender_id=1, inicio_em="
     c.execute("INSERT INTO campaign_contacts(campaign_id,email) VALUES(?,?)", (cid, email))
     c.commit()
     c.close()
-    _set_progress(cid, status="gerando", total=n_emails, feitos=0, etapa="iniciando…")
+    _set_progress(cid, status="gerando", total=n_emails, feitos=0, etapa="iniciando…",
+                  temperatura=temperatura)
     threading.Thread(target=_build_worker,
-                     args=(cid, objetivo, "finita", n_emails, None, None, kb, imgs, brief),
+                     args=(cid, objetivo, "finita", n_emails, None, None, kb, imgs, brief,
+                           temperatura),
                      daemon=True).start()
     return cid
 

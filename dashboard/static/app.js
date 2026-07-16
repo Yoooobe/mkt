@@ -195,11 +195,72 @@ async function vInicio() {
 }
 
 /* ---------- TELA: Campanhas ---------- */
+const campFiltro = {q: "", status: "", sender_id: "", ordenar: "recentes"};
+let campBuscaTimer = null;
+
+function campBuscar(el) {
+  campFiltro.q = el.value;
+  clearTimeout(campBuscaTimer);
+  campBuscaTimer = setTimeout(async () => {
+    await vCampanhas();
+    const inp = document.getElementById("camp-q");
+    if (inp) { inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); }
+  }, 300);
+}
+function campFiltrarStatus(s) { campFiltro.status = s; vCampanhas(); }
+function campFiltrarSender(v) { campFiltro.sender_id = v; vCampanhas(); }
+
+async function campLimparTodas() {
+  try {
+    const prev = await api("/api/campaigns/bulk-delete", {json: {dry_run: true}});
+    if (!prev.campanhas) return toast("Nenhuma campanha para limpar.");
+    const ok = confirm(`🧹 Limpar TODAS as campanhas?\n\n` +
+      `• ${prev.campanhas} campanha(s)\n` +
+      `• ${prev.steps} etapa(s) de sequência\n` +
+      `• ${prev.contatos_campanha} vínculo(s) de contato\n` +
+      `• ${prev.fila_cancelar} tarefa(s) de fila a cancelar\n\n` +
+      `Os contatos do CRM e o histórico de envios/respostas são mantidos. Não dá pra desfazer.`);
+    if (!ok) return;
+    const r = await api("/api/campaigns/bulk-delete", {json: {dry_run: false}});
+    toast(`🧹 ${r.campanhas_excluidas} campanha(s) excluída(s)` +
+      (r.fila_canceladas ? ` · ${r.fila_canceladas} tarefa(s) de fila cancelada(s)` : "") + " ✔", 6000);
+    vCampanhas();
+  } catch (e) { toast("Erro ao limpar campanhas: " + e.message, 6000); }
+}
+
 async function vCampanhas() {
-  const d = await api("/api/campaigns");
+  const p = new URLSearchParams();
+  if (campFiltro.q.trim()) p.set("q", campFiltro.q.trim());
+  if (campFiltro.status) p.set("status", campFiltro.status);
+  if (campFiltro.sender_id) p.set("sender_id", campFiltro.sender_id);
+  if (campFiltro.ordenar !== "recentes") p.set("ordenar", campFiltro.ordenar);
+  const [d, sd] = await Promise.all([
+    api("/api/campaigns" + (p.toString() ? "?" + p : "")),
+    api("/api/senders").catch(() => ({senders: []})),
+  ]);
+  const chips = [["", "Todas"], ["rascunho", "Rascunho"], ["ativa", "Ativa"],
+                 ["pausada", "Pausada"], ["encerrada", "Encerrada"]];
+  const filtrando = campFiltro.q.trim() || campFiltro.status || campFiltro.sender_id;
   view.innerHTML = `
     <div class="toolbar"><h2 style="margin:0">Campanhas</h2><span class="sp"></span>
+      <button class="warn" onclick="campLimparTodas()">🧹 Limpar campanhas</button>
       <button class="primary" onclick="dlgCampanha()">✨ Nova campanha com IA</button></div>
+    <div class="toolbar">
+      <input id="camp-q" type="search" placeholder="🔍 Buscar por nome ou objetivo…"
+        value="${esc(campFiltro.q)}" style="min-width:220px" oninput="campBuscar(this)">
+      ${chips.map(([v, rot]) => `<label class="tagopt" style="${campFiltro.status === v ? "background:#f0e9fa;border-color:#8b5cf6" : ""}">
+        <input type="radio" name="camp-status" value="${v}" ${campFiltro.status === v ? "checked" : ""}
+          onchange="campFiltrarStatus(this.value)"> ${rot}</label>`).join("")}
+      <select onchange="campFiltrarSender(this.value)" title="Filtrar por remetente">
+        <option value="">Todos os remetentes</option>
+        ${sd.senders.map(s => `<option value="${s.id}" ${String(campFiltro.sender_id) === String(s.id) ? "selected" : ""}>✉️ ${esc(s.email)}</option>`).join("")}
+      </select>
+      <select onchange="campFiltro.ordenar=this.value;vCampanhas()" title="Ordenar">
+        ${[["recentes", "Mais recentes"], ["nome", "Nome (A–Z)"], ["status", "Status"]].map(([v, rot]) =>
+          `<option value="${v}" ${campFiltro.ordenar === v ? "selected" : ""}>${rot}</option>`).join("")}
+      </select>
+      <span class="muted">${d.total} campanha(s)</span>
+    </div>
     ${d.campanhas.map(c => {
       const ativos = c.contatos_por_status.ativo || 0, pend = c.contatos_por_status.pendente || 0,
             pausa = c.contatos_por_status.pausado_resposta || 0, done = c.contatos_por_status.concluido || 0;
@@ -911,15 +972,25 @@ async function vRemetente(id) {
 const tagChip = t => `<span class="tag">${esc(t)}</span>`;
 
 async function vCRM() {
-  const funis = ["", "novo", "contatado", "follow-up", "último-toque", "respondeu", "agendou", "encerrado"];
+  const funis = ["", "novo", "contatado", "follow-up", "último-toque", "respondeu", "pediu-agendamento", "agendou", "encerrado"];
   const [td, ld] = await Promise.all([api("/api/tags"), api("/api/lead-segments")]);
   let crmPage = 1;
+  const presets = [
+    {rotulo: "🧊 Leads frios", filtros: {"crm-seg": "frio"}},
+    {rotulo: "😴 Base inativa", filtros: {"crm-tag": "origem-base-inativa"}},
+    {rotulo: "🚫 Clientes inativos", filtros: {"crm-tag": "cliente_inativo_4unik"}},
+    {rotulo: "🔁 Reativação", filtros: {"crm-perfil": "telefone_reativacao"}},
+    {rotulo: "🏭 Com ERP", filtros: {"crm-tem-erp": true}},
+    {rotulo: "Todos", filtros: {}},
+  ];
   view.innerHTML = `
     <div class="crm-head"><div><h2>CRM inteligente</h2>
       <p>Prioriza leads completos e com telefone. Busque por qualquer característica comercial.</p></div>
       <div class="toolbar"><button class="primary" onclick="document.getElementById('dlg-contato').showModal()">＋ Novo contato</button>
       <label class="btn">📥 Importar<input type="file" id="crm-up" accept=".csv,.xlsx,.xls" hidden></label>
       <button id="crm-export">⬇ Exportar CSV</button></div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">${presets.map((p, i) =>
+      `<button class="crm-preset" data-preset="${i}" style="border-radius:999px;font-size:12.5px;padding:5px 13px">${esc(p.rotulo)}</button>`).join("")}</div>
     <div class="card crm-filters">
       <input id="crm-q" class="crm-search" placeholder="🔎 Nome, empresa, e-mail, telefone, cargo, categoria, interesse, comentário…">
       <select id="crm-perfil"><option value="">🎯 Todos os perfis</option>${ld.segmentos.map(s => `<option value="${s.id}">${esc(s.nome)} (${s.contatos})</option>`).join("")}</select>
@@ -927,31 +998,59 @@ async function vCRM() {
       <select id="crm-funil">${funis.map(f => `<option value="${f}">${f || "Todos os funis"}</option>`).join("")}</select>
       <select id="crm-resp"><option value="">Qualquer resposta</option><option>sim</option><option value="não">Não respondeu</option></select>
       <select id="crm-tag"><option value="">🏷️ Todas as categorias</option>${td.tags.map(t => `<option value="${esc(t.tag)}">${esc(t.tag)} (${t.contatos})</option>`).join("")}</select>
+      <select id="crm-seg"><option value="">🌡️ Todos os segmentos</option><option value="quente">🔥 Quente</option><option value="morno">🌤️ Morno</option><option value="frio">🧊 Frio</option></select>
+      <input id="crm-erp" placeholder="🏭 ERP contém…">
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px"><input type="checkbox" id="crm-tem-erp">Somente com ERP</label>
       <select id="crm-ordem"><option value="prioridade">🔥 Mais quentes primeiro</option><option value="recentes">Mais recentes</option><option value="nome">Nome A–Z</option><option value="empresa">Empresa A–Z</option></select>
       <select id="crm-size"><option value="20">20 por página</option><option value="50" selected>50 por página</option><option value="100">100 por página</option><option value="200">200 por página</option></select>
       <button id="crm-limpar">Limpar filtros</button>
     </div><div id="crm-tbl">carregando…</div>`;
-  const inicial = ld.segmentos.find(s => s.id === "com_telefone" && s.contatos > 0);
-  if (inicial) document.getElementById("crm-perfil").value = "com_telefone";
-  const params = (page = crmPage) => new URLSearchParams({
-    q: document.getElementById("crm-q").value, funil: document.getElementById("crm-funil").value,
-    respondeu: document.getElementById("crm-resp").value, tag: document.getElementById("crm-tag").value,
-    perfil: document.getElementById("crm-perfil").value, score_min: document.getElementById("crm-score").value,
-    ordenar: document.getElementById("crm-ordem").value, page, page_size: document.getElementById("crm-size").value});
+  // Sem default forçado: restaura o último filtro usado (localStorage crm_filtros); 1ª visita = sem filtro.
+  const CAMPOS_FILTRO = ["crm-q", "crm-perfil", "crm-score", "crm-funil", "crm-resp", "crm-tag", "crm-seg", "crm-erp", "crm-ordem", "crm-size"];
+  const setCampo = (id, v) => {
+    const el = document.getElementById(id);
+    if (el.tagName === "SELECT" && v && ![...el.options].some(o => o.value === v)) el.add(new Option(v, v));
+    el.value = v;
+  };
+  let salvos = {};
+  try { salvos = JSON.parse(localStorage.getItem("crm_filtros") || "{}"); } catch { salvos = {}; }
+  CAMPOS_FILTRO.forEach(id => { if (salvos[id] != null && salvos[id] !== "") setCampo(id, String(salvos[id])); });
+  document.getElementById("crm-tem-erp").checked = !!salvos["crm-tem-erp"];
+  const salvarFiltros = () => {
+    const st = Object.fromEntries(CAMPOS_FILTRO.map(id => [id, document.getElementById(id).value]));
+    st["crm-tem-erp"] = document.getElementById("crm-tem-erp").checked;
+    localStorage.setItem("crm_filtros", JSON.stringify(st));
+  };
+  const params = (page = crmPage) => {
+    const p = new URLSearchParams({
+      q: document.getElementById("crm-q").value, funil: document.getElementById("crm-funil").value,
+      respondeu: document.getElementById("crm-resp").value, tag: document.getElementById("crm-tag").value,
+      perfil: document.getElementById("crm-perfil").value, score_min: document.getElementById("crm-score").value,
+      segmento: document.getElementById("crm-seg").value, erp: document.getElementById("crm-erp").value,
+      ordenar: document.getElementById("crm-ordem").value, page, page_size: document.getElementById("crm-size").value});
+    if (document.getElementById("crm-tem-erp").checked) p.set("tem_erp", "1");
+    return p;
+  };
+  const TAGS_INATIVOS_CRM = ["cliente_inativo_4unik", "origem-base-inativa"];
   const load = async () => {
+    salvarFiltros();
     const d = await api("/api/contacts?" + params());
     const r = d.resumo || {};
     document.getElementById("crm-tbl").innerHTML = `
       <div class="crm-summary">
         <div><b>${d.total}</b><span>contatos filtrados</span></div><div><b>${r.telefones || 0}</b><span>com telefone</span></div>
         <div><b>${r.historicos || 0}</b><span>com histórico</span></div><div><b>${r.quentes || 0}</b><span>leads quentes</span></div>
+        <div><b>${r.frios || 0}</b><span>🧊 leads frios</span></div><div><b>${r.inativos || 0}</b><span>inativos (tags)</span></div>
       </div>
       <div class="lead-grid">${d.contatos.map(x => `<article class="lead-card" onclick="location.hash='#/contato/${encodeURIComponent(x.email)}'">
         <div class="lead-top"><div><h3>${esc(x.nome || x.email.split("@")[0])}</h3><div class="lead-company">${esc(x.empresa || "Empresa não informada")}</div></div>
           <div class="score ${x.lead_score >= 70 ? "hot" : x.lead_score >= 50 ? "warm" : ""}"><b>${x.lead_score || 0}</b><small>/100</small></div></div>
         <div class="lead-contact"><span>✉ ${esc(x.email)}</span><span class="${x.telefone ? "has-phone" : "muted"}">☎ ${esc(x.telefone || "sem telefone")}</span></div>
         <div class="lead-profile"><b>${esc(x.cargo || "Cargo não informado")}</b><span>${esc(x.porte_assinantes || x.porte_funcionarios || x.erp || "")}</span></div>
-        <div class="lead-tags">${badge(x.segmento || "sem segmento", x.segmento)} ${badge(x.funil)} ${(x.tags || []).slice(0, 3).map(tagChip).join(" ")}</div>
+        <div class="lead-tags">${badge(x.segmento === "frio" ? "🧊 frio" : (x.segmento || "sem segmento"), x.segmento)} ${badge(x.funil)}${
+          (x.tags || []).includes("cliente_inativo_4unik") ? ' <span class="tag" title="cliente_inativo_4unik">🚫 cliente inativo</span>' : ""}${
+          (x.tags || []).includes("origem-base-inativa") ? ' <span class="tag" title="origem-base-inativa">😴 base inativa</span>' : ""} ${
+          (x.tags || []).filter(t => !TAGS_INATIVOS_CRM.includes(t)).slice(0, 3).map(tagChip).join(" ")}</div>
         <div class="lead-history">${esc(x.qualificacao || x.resumo_historico || x.enriquecimento || "Sem histórico comercial")}</div>
       </article>`).join("") || '<div class="card muted">Nenhum lead encontrado.</div>'}</div>
       <div class="pager"><button id="crm-prev" ${d.page <= 1 ? "disabled" : ""}>← Anterior</button><span>Página <b>${d.page}</b> de <b>${d.pages}</b> · ${d.total} resultado(s)</span><button id="crm-next" ${d.page >= d.pages ? "disabled" : ""}>Próxima →</button></div>`;
@@ -959,9 +1058,25 @@ async function vCRM() {
     document.getElementById("crm-next").onclick = () => { crmPage++; load(); };
   };
   let timer;
-  document.getElementById("crm-q").oninput = () => { clearTimeout(timer); timer = setTimeout(() => { crmPage = 1; load(); }, 220); };
-  ["crm-funil", "crm-resp", "crm-tag", "crm-perfil", "crm-score", "crm-ordem", "crm-size"].forEach(id => document.getElementById(id).onchange = () => { crmPage = 1; load(); });
-  document.getElementById("crm-limpar").onclick = () => { ["crm-q", "crm-funil", "crm-resp", "crm-tag", "crm-perfil"].forEach(id => document.getElementById(id).value = ""); document.getElementById("crm-score").value = "0"; crmPage = 1; load(); };
+  const buscaComAtraso = () => { clearTimeout(timer); timer = setTimeout(() => { crmPage = 1; load(); }, 220); };
+  document.getElementById("crm-q").oninput = buscaComAtraso;
+  document.getElementById("crm-erp").oninput = buscaComAtraso;
+  ["crm-funil", "crm-resp", "crm-tag", "crm-perfil", "crm-score", "crm-seg", "crm-tem-erp", "crm-ordem", "crm-size"].forEach(id => document.getElementById(id).onchange = () => { crmPage = 1; load(); });
+  const limparFiltros = () => {
+    ["crm-q", "crm-funil", "crm-resp", "crm-tag", "crm-perfil", "crm-seg", "crm-erp"].forEach(id => document.getElementById(id).value = "");
+    document.getElementById("crm-score").value = "0";
+    document.getElementById("crm-tem-erp").checked = false;
+  };
+  document.getElementById("crm-limpar").onclick = () => { limparFiltros(); crmPage = 1; load(); };
+  document.querySelectorAll(".crm-preset").forEach(btn => btn.onclick = () => {
+    limparFiltros();
+    const filtros = presets[+btn.dataset.preset].filtros;
+    for (const [id, valor] of Object.entries(filtros)) {
+      if (id === "crm-tem-erp") document.getElementById(id).checked = !!valor;
+      else setCampo(id, valor);
+    }
+    crmPage = 1; load();
+  });
   document.getElementById("crm-export").onclick = async () => {
     const res = await fetch("/api/contacts/export.csv?" + params(1), {headers: {"X-API-Key": window.API_KEY}});
     if (!res.ok) return toast("Não foi possível exportar os leads.");

@@ -1,0 +1,42 @@
+# Contexto de build do deploy/Dockerfile (raiz do repo).
+# Nada de segredos, dados operacionais ou lixo local entra na imagem:
+# o estado real (dashboard.db, gws_accounts) vem do R2 no boot do container.
+.git/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+.claude/
+
+# Segredos e credenciais — NUNCA na imagem
+dashboard/.env
+zapi-config.env
+proposals/monitor_config.env
+client_secret_*.json
+gws_accounts/
+tracking-worker/.dev.vars
+
+# Dados operacionais
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.csv
+*.xlsx
+*.zip
+dashboard/logs/
+dashboard/out/
+proposals/monitor_state/
+proposals/drafts/
+proposals/raw_*.json
+proposals/msg_*.txt
+proposals/*.html
+proposals/sent_log.txt
+bases_leads/
+samples/
+
+# Irrelevantes para a imagem
+tracking-worker/
+deploy/worker/node_modules/
+terminals/

@@ -1284,6 +1284,23 @@ HANDLERS = {"check_thread": _h_check_thread, "whatsapp": _h_whatsapp,
 
 # ---------------- ciclo principal (cron/30min + thread do servidor) ----------------
 
+def has_active_campaigns():
+    """True se existe ao menos uma campanha ativa — gate para os loops de background."""
+    c = db.conn()
+    row = c.execute("SELECT 1 FROM campaigns WHERE status='ativa' LIMIT 1").fetchone()
+    c.close()
+    return bool(row)
+
+
+def has_recent_sends(days=14):
+    """True se houve envio nos últimos `days` dias — threads ainda podem receber resposta."""
+    c = db.conn()
+    row = c.execute("SELECT 1 FROM sends WHERE data >= date('now','localtime',?) LIMIT 1",
+                    (f"-{int(days)} days",)).fetchone()
+    c.close()
+    return bool(row)
+
+
 def _enfileirar_envios_devidos(c, campaign_id=None):
     """Campanhas ativas: contatos com next_send_at vencido viram itens campaign_send."""
     n = 0

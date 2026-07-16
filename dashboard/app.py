@@ -100,6 +100,111 @@ def notificar_leads_novos():
         engine.log(f"lead do site notificado: {l['email']} ({l['origem']})")
 
 
+# ---------------- loops de runtime (ligados sob demanda) ----------------
+# Para reduzir consumo, as 4 threads de background só nascem quando existe
+# campanha ativa (ensure_runtime_loops) e adormecem sozinhas quando não há
+# mais trabalho: no topo de cada iteração o loop checa sua condição e, se
+# falsa, espera no _wake (timeout de reavaliação) em vez de girar no
+# intervalo curto. _wake.set() na ativação acorda todo mundo na hora.
+
+_loops_lock = threading.Lock()
+_loops_started = False
+_wake = threading.Event()
+_IDLE_WAIT_S = 300
+
+
+def _dormir_ate_ativar():
+    """Espera um _wake.set() (ativação de campanha) ou o timeout de reavaliação."""
+    if _wake.wait(_IDLE_WAIT_S):
+        _wake.clear()
+
+
+def _ciclo_periodico():
+    while True:
+        if not engine.has_active_campaigns():
+            _dormir_ate_ativar()
+            continue
+        try:
+            engine.process_cycle()
+            strategy.run("periodic", perform_sync=False)
+        except Exception as e:
+            engine.log(f"ciclo com erro inesperado: {e}")
+        time.sleep(1800)
+
+
+def _poll_tracking_loop():
+    # pull leve de aberturas/cliques a cada 60s → painel quase em tempo real
+    while True:
+        if not engine.has_active_campaigns():
+            _dormir_ate_ativar()
+            continue
+        time.sleep(60)
+        try:
+            engine.poll_tracking()
+        except Exception:
+            pass
+
+
+def _replies_tem_trabalho():
+    # Período de graça: mesmo sem campanha ativa, threads de envios recentes
+    # ainda podem receber resposta — continua varrendo por ~14 dias.
+    return engine.has_active_campaigns() or engine.has_recent_sends(days=14)
+
+
+def _poll_replies_loop():
+    # respostas de campanha + agendamentos do Calendly a cada ~3 min
+    while True:
+        if not _replies_tem_trabalho():
+            _dormir_ate_ativar()
+            continue
+        time.sleep(180)
+        try:
+            engine.poll_replies()
+        except Exception:
+            pass
+        try:
+            engine.scan_calendly()
+        except Exception:
+            pass
+        try:
+            engine.scan_bounces()   # auto-supressão de e-mails inexistentes (hard bounce)
+        except Exception:
+            pass
+        try:
+            notificar_leads_novos()  # lead novo do site → WhatsApp + email comercial
+        except Exception:
+            pass
+
+
+def _campaign_dispatch_loop():
+    # O ciclo completo continua a cada 30 min; este gatilho leve garante que
+    # um horário de campanha vencido seja disparado em poucos segundos.
+    while True:
+        if not engine.has_active_campaigns():
+            _dormir_ate_ativar()
+            continue
+        time.sleep(10)
+        try:
+            engine.process_due_campaign_sends()
+        except Exception as e:
+            engine.log(f"gatilho instantâneo de campanha falhou: {e}")
+
+
+def ensure_runtime_loops():
+    """Liga as 4 threads de background uma única vez (idempotente e thread-safe).
+
+    Não existe "stop": ao pausar/apagar a última campanha ativa, cada loop
+    percebe na iteração seguinte e adormece no _wake até a próxima ativação."""
+    global _loops_started
+    with _loops_lock:
+        if _loops_started:
+            return
+        _loops_started = True
+    for alvo in (_ciclo_periodico, _poll_tracking_loop, _poll_replies_loop, _campaign_dispatch_loop):
+        threading.Thread(target=alvo, daemon=True).start()
+    engine.log("loops de runtime iniciados")
+
+
 @app.on_event("startup")
 def startup():
     db.init()
@@ -117,67 +222,26 @@ def startup():
         engine.scan_calendly()  # marca 'agendou' real a partir das notificações do Calendly
     except Exception as e:
         engine.log(f"scan_calendly no startup falhou: {e}")
-
-    def ciclo_periodico():
-        while True:
-            try:
-                engine.process_cycle()
-                strategy.run("periodic", perform_sync=False)
-            except Exception as e:
-                engine.log(f"ciclo com erro inesperado: {e}")
-            time.sleep(1800)
-
-    def poll_tracking_loop():
-        # pull leve de aberturas/cliques a cada 60s → painel quase em tempo real
-        while True:
-            time.sleep(60)
-            try:
-                engine.poll_tracking()
-            except Exception:
-                pass
-
-    def poll_replies_loop():
-        # respostas de campanha + agendamentos do Calendly a cada ~3 min
-        while True:
-            time.sleep(180)
-            try:
-                engine.poll_replies()
-            except Exception:
-                pass
-            try:
-                engine.scan_calendly()
-            except Exception:
-                pass
-            try:
-                engine.scan_bounces()   # auto-supressão de e-mails inexistentes (hard bounce)
-            except Exception:
-                pass
-            try:
-                notificar_leads_novos()  # lead novo do site → WhatsApp + email comercial
-            except Exception:
-                pass
-
-    def campaign_dispatch_loop():
-        # O ciclo completo continua a cada 30 min; este gatilho leve garante que
-        # um horário de campanha vencido seja disparado em poucos segundos.
-        while True:
-            time.sleep(10)
-            try:
-                engine.process_due_campaign_sends()
-            except Exception as e:
-                engine.log(f"gatilho instantâneo de campanha falhou: {e}")
-
-    threading.Thread(target=ciclo_periodico, daemon=True).start()
-    threading.Thread(target=poll_tracking_loop, daemon=True).start()
-    threading.Thread(target=poll_replies_loop, daemon=True).start()
-    threading.Thread(target=campaign_dispatch_loop, daemon=True).start()
+    # Recuperação pós-restart: só liga os loops se houver trabalho pendente
+    # (campanha ativa, ou envios recentes que ainda merecem varredura de respostas).
+    if engine.has_active_campaigns() or engine.has_recent_sends(days=14):
+        ensure_runtime_loops()
 
 
 # ---------------- contatos / CRM ----------------
 
+TAGS_INATIVOS = ("cliente_inativo_4unik", "origem-base-inativa")
+
+
+def _segmento_contato(d):
+    """Temperatura efetiva: coluna preenchida ou derivação por data (db.segmento_por_data)."""
+    return (d.get("segmento") or "").strip().lower() or db.segmento_por_data(d.get("primeiro_envio") or "")
+
+
 @app.get("/api/contacts")
 def contacts(funil: str = "", respondeu: str = "", campanha: int = 0, q: str = "", tag: str = "",
              perfil: str = "", com_telefone: bool = False, score_min: int = 0,
+             segmento: str = "", erp: str = "", tem_erp: bool = False,
              page: int = 1, page_size: int = 50, ordenar: str = "prioridade"):
     c = db.conn()
     if campanha:
@@ -199,6 +263,12 @@ def contacts(funil: str = "", respondeu: str = "", campanha: int = 0, q: str = "
         if respondeu and (d["respondeu"] or "").lower() != respondeu.lower():
             continue
         if tag and tag not in d["tags"]:
+            continue
+        if segmento and _segmento_contato(d) != segmento.strip().lower():
+            continue
+        if erp and erp.strip().lower() not in (d.get("erp") or "").lower():
+            continue
+        if tem_erp and not (d.get("erp") or "").strip():
             continue
         if (com_telefone or perfil == "com_telefone") and not (d.get("telefone") or "").strip():
             continue
@@ -228,7 +298,9 @@ def contacts(funil: str = "", respondeu: str = "", campanha: int = 0, q: str = "
     resumo = {"telefones": sum(bool(x.get("telefone")) for x in out),
               "historicos": sum(bool(x.get("enriquecimento")) for x in out),
               "respondedores": sum((x.get("respondeu") or "").lower() == "sim" for x in out),
-              "quentes": sum(x.get("segmento") == "quente" for x in out)}
+              "quentes": sum(_segmento_contato(x) == "quente" for x in out),
+              "frios": sum(_segmento_contato(x) == "frio" for x in out),
+              "inativos": sum(any(t in (x.get("tags") or []) for t in TAGS_INATIVOS) for x in out)}
     return {"total": total, "contatos": pagina, "page": page, "page_size": page_size,
             "pages": max(1, (total + page_size - 1) // page_size), "resumo": resumo}
 
@@ -236,15 +308,17 @@ def contacts(funil: str = "", respondeu: str = "", campanha: int = 0, q: str = "
 @app.get("/api/contacts/export.csv")
 def contacts_export(q: str = "", funil: str = "", respondeu: str = "", tag: str = "",
                     perfil: str = "", com_telefone: bool = False, score_min: int = 0,
+                    segmento: str = "", erp: str = "", tem_erp: bool = False,
                     ordenar: str = "prioridade"):
     data = contacts(funil=funil, respondeu=respondeu, q=q, tag=tag, perfil=perfil,
-                    com_telefone=com_telefone, score_min=score_min, page=1,
-                    page_size=200, ordenar=ordenar)
+                    com_telefone=com_telefone, score_min=score_min, segmento=segmento,
+                    erp=erp, tem_erp=tem_erp, page=1, page_size=200, ordenar=ordenar)
     # A exportação deve conter todos os resultados filtrados, não só a página visível.
     paginas = [data["contatos"]]
     for pagina in range(2, data["pages"] + 1):
         paginas.append(contacts(funil=funil, respondeu=respondeu, q=q, tag=tag, perfil=perfil,
-                                com_telefone=com_telefone, score_min=score_min, page=pagina,
+                                com_telefone=com_telefone, score_min=score_min, segmento=segmento,
+                                erp=erp, tem_erp=tem_erp, page=pagina,
                                 page_size=200, ordenar=ordenar)["contatos"])
     output = io.StringIO()
     campos = ["nome", "empresa", "email", "telefone", "cargo", "porte_funcionarios", "erp",
@@ -519,6 +593,8 @@ def contact_launch_campaign_now(email: str, body: DisparoImediatoBody):
     c.execute("UPDATE campaigns SET status='ativa' WHERE id=?", (body.campaign_id,))
     c.commit()
     c.close()
+    ensure_runtime_loops()
+    _wake.set()  # acorda os loops adormecidos sem esperar o timeout
     # Ao incluir alguém numa campanha já ativa, não reagendamos a audiência inteira:
     # somente este lead recebe a etapa 1 agora. Campanha recém-ativada mantém o
     # agendamento normal dos demais contatos.
@@ -1082,10 +1158,33 @@ def _campaign_payload(c, camp):
 
 
 @app.get("/api/campaigns")
-def campaigns():
+def campaigns(q: str = "", status: str = "", tipo: str = "",
+              sender_id: Optional[int] = None, ordenar: str = "recentes"):
+    """Lista campanhas com busca/filtro opcional: q (nome/objetivo, case-insensitive),
+    status (rascunho|ativa|pausada|encerrada), tipo, sender_id e ordenar
+    (recentes|nome|status; default recentes)."""
+    where, params = [], []
+    if q.strip():
+        like = f"%{q.strip().lower()}%"
+        where.append("(LOWER(nome) LIKE ? OR LOWER(objetivo) LIKE ?)")
+        params += [like, like]
+    if status:
+        where.append("status=?")
+        params.append(status)
+    if tipo:
+        where.append("tipo=?")
+        params.append(tipo)
+    if sender_id is not None:
+        where.append("sender_id=?")
+        params.append(sender_id)
+    ordem = {"recentes": "id DESC", "nome": "nome COLLATE NOCASE ASC",
+             "status": "status ASC, id DESC"}.get(ordenar, "id DESC")
+    sql = "SELECT * FROM campaigns"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += f" ORDER BY {ordem}"
     c = db.conn()
-    out = [_campaign_payload(c, r) for r in
-           c.execute("SELECT * FROM campaigns ORDER BY id DESC").fetchall()]
+    out = [_campaign_payload(c, r) for r in c.execute(sql, params).fetchall()]
     c.close()
     return {"total": len(out), "campanhas": out}
 
@@ -1360,6 +1459,8 @@ def campaign_activate(cid: int, body: Optional[AtivarBody] = None):
     c.execute("UPDATE campaigns SET status='ativa' WHERE id=?", (cid,))
     c.commit()
     c.close()
+    ensure_runtime_loops()
+    _wake.set()  # acorda os loops adormecidos sem esperar o timeout
     agendados = engine.agendar_campanha(cid)
     engine.log(f"campanha {cid} ATIVADA pelo Genal — {agendados} contato(s) agendados")
     # Se o horário já estiver liberado, não espera nem o próximo tick de 10 s.
@@ -1389,6 +1490,8 @@ def campaign_pause(cid: int):
         c.close()
         return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
     c.execute("UPDATE campaigns SET status='pausada' WHERE id=?", (cid,))
+    # Nada a matar aqui: os loops de runtime adormecem sozinhos na próxima
+    # iteração quando não restar campanha ativa (ver ensure_runtime_loops).
     # Tarefas ainda não iniciadas não devem sobreviver ao comando de pausa.
     c.execute("UPDATE queue SET status='done', updated_at=?, "
               "error='cancelado: campanha pausada' "
@@ -1422,13 +1525,19 @@ def campaign_resume_build(cid: int):
             "nota": "Retomando a redação dos e-mails de onde parou — acompanhe na tela da campanha."}
 
 
-@app.delete("/api/campaigns/{cid}")
-def campaign_delete(cid: int):
-    c = db.conn()
-    camp = c.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
-    if not camp:
-        c.close()
-        return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
+def _campaign_delete_safe(c, camp):
+    """Rotina segura de exclusão de uma campanha (sem commit): se estiver ativa marca
+    'pausada' primeiro, cancela a fila pendente de envio e só então apaga etapas,
+    vínculos, a campanha e os templates de IA nunca enviados. Preserva o histórico
+    (sends/events/replies) e os contatos do CRM. Retorna nº de tarefas canceladas."""
+    cid = camp["id"]
+    if camp["status"] == "ativa":
+        c.execute("UPDATE campaigns SET status='pausada' WHERE id=?", (cid,))
+    canceladas = c.execute(
+        "UPDATE queue SET status='done', updated_at=?, "
+        "error='cancelado: campanha excluída' "
+        "WHERE tipo='campaign_send' AND status='pending' AND payload LIKE ?",
+        (db.now(), f'%\"campaign_id\": {cid},%')).rowcount
     # remove campanha + etapas + vínculos; templates de IA da campanha (não usados em envios) também
     refs = [r["template_ref"] for r in c.execute(
         "SELECT template_ref FROM campaign_steps WHERE campaign_id=?", (cid,)).fetchall()]
@@ -1442,9 +1551,65 @@ def campaign_delete(cid: int):
                               (f"%camp{cid}-%",)).fetchone()
             if not usado:
                 c.execute("DELETE FROM templates_ai WHERE id=? AND origem='ia'", (tid,))
+    return canceladas
+
+
+@app.delete("/api/campaigns/{cid}")
+def campaign_delete(cid: int):
+    c = db.conn()
+    camp = c.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if not camp:
+        c.close()
+        return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
+    fila_canceladas = _campaign_delete_safe(c, camp)
     c.commit()
     c.close()
-    return {"id": cid, "deletado": True}
+    return {"id": cid, "deletado": True, "fila_canceladas": fila_canceladas}
+
+
+class BulkDeleteCampanhas(BaseModel):
+    ids: Optional[List[int]] = None       # sem ids/status = todas as campanhas
+    status: Optional[List[str]] = None    # rascunho | ativa | pausada | encerrada
+    dry_run: bool = False
+
+
+@app.post("/api/campaigns/bulk-delete")
+def campaigns_bulk_delete(body: BulkDeleteCampanhas):
+    """Exclusão em massa com a mesma rotina segura por campanha (pausa ativas e cancela
+    a fila antes de apagar). dry_run=true só retorna as contagens, sem apagar nada."""
+    where, params = [], []
+    if body.ids:
+        where.append(f"id IN ({','.join('?' * len(body.ids))})")
+        params += body.ids
+    if body.status:
+        where.append(f"status IN ({','.join('?' * len(body.status))})")
+        params += body.status
+    sql = "SELECT * FROM campaigns" + (" WHERE " + " AND ".join(where) if where else "")
+    c = db.conn()
+    camps = c.execute(sql, params).fetchall()
+    if body.dry_run:
+        steps = contatos = fila = 0
+        for camp in camps:
+            cid = camp["id"]
+            steps += c.execute("SELECT COUNT(*) AS n FROM campaign_steps "
+                               "WHERE campaign_id=?", (cid,)).fetchone()["n"]
+            contatos += c.execute("SELECT COUNT(*) AS n FROM campaign_contacts "
+                                  "WHERE campaign_id=?", (cid,)).fetchone()["n"]
+            fila += c.execute("SELECT COUNT(*) AS n FROM queue WHERE tipo='campaign_send' "
+                              "AND status='pending' AND payload LIKE ?",
+                              (f'%\"campaign_id\": {cid},%',)).fetchone()["n"]
+        c.close()
+        return {"dry_run": True, "campanhas": len(camps), "steps": steps,
+                "contatos_campanha": contatos, "fila_cancelar": fila,
+                "ids": [camp["id"] for camp in camps]}
+    excluidas, fila_canceladas = [], 0
+    for camp in camps:
+        fila_canceladas += _campaign_delete_safe(c, camp)
+        excluidas.append(camp["id"])
+    c.commit()
+    c.close()
+    return {"dry_run": False, "campanhas_excluidas": len(excluidas),
+            "fila_canceladas": fila_canceladas, "ids": excluidas}
 
 
 # ---------------- remetentes (multi-conta gws) ----------------

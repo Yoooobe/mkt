@@ -1,0 +1,16 @@
+{
+  "name": "gws4unik-dashboard-worker",
+  "private": true,
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev"
+  },
+  "dependencies": {
+    "@cloudflare/containers": "latest"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "latest",
+    "typescript": "^5",
+    "wrangler": "latest"
+  }
+}

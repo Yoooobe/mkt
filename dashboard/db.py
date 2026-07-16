@@ -90,6 +90,7 @@ CREATE TABLE IF NOT EXISTS templates_ai (
   cta_url TEXT DEFAULT '',
   inner_html TEXT,
   texto_plano TEXT DEFAULT '',
+  assuntos_alt TEXT DEFAULT '',            -- JSON: variantes de assunto geradas pela IA
   status TEXT DEFAULT 'pendente',          -- pendente | aprovado
   origem TEXT DEFAULT 'ia',                -- ia | seed
   criado_em TEXT DEFAULT (datetime('now','localtime'))
@@ -273,6 +274,10 @@ def init():
                 "estado_negocio", "motivo_perda", "qualificacao", "telefone", "enriquecimento"):
         if col not in ccols:
             c.execute(f"ALTER TABLE contacts ADD COLUMN {col} TEXT DEFAULT ''")
+    tcols = {r["name"] for r in c.execute("PRAGMA table_info(templates_ai)")}
+    if "assuntos_alt" not in tcols:
+        # variantes de assunto (JSON list) geradas pelo copywriter para teste de gancho
+        c.execute("ALTER TABLE templates_ai ADD COLUMN assuntos_alt TEXT DEFAULT ''")
     c.commit()
     c.close()
 
@@ -613,7 +618,7 @@ def resumo_audiencia(emails):
     rows = []
     campos = """porte_assinantes, porte_funcionarios, erp, cargo, estado_negocio,
                    motivo_perda, qualificacao, origem, tags, envios, respondeu, ultimo_envio,
-                   telefone, enriquecimento, etapa_funil"""
+                   telefone, enriquecimento, etapa_funil, segmento, primeiro_envio"""
     for start in range(0, len(emails), 900):
         bloco = emails[start:start + 900]
         qs = ",".join("?" * len(bloco))
@@ -624,6 +629,12 @@ def resumo_audiencia(emails):
         cnt = Counter((r[campo] or "").strip() for r in rows if (r[campo] or "").strip())
         return [{"valor": v, "n": q} for v, q in cnt.most_common(n)]
 
+    # temperatura (quente/morno/frio): usa o segmento gravado; se vazio, deriva do primeiro envio
+    temps = Counter()
+    for r in rows:
+        t = (r["segmento"] or "").strip() or segmento_por_data(r["primeiro_envio"])
+        if t:
+            temps[t] += 1
     fez_demo = sum(1 for r in rows if "fez-demo" in tags_list(r["tags"]))
     ja_contatados = sum(1 for r in rows if (r["envios"] or 0) > 0)
     responderam = sum(1 for r in rows if (r["respondeu"] or "").lower() == "sim")
@@ -637,6 +648,9 @@ def resumo_audiencia(emails):
         "erp": top("erp"),
         "cargo": top("cargo"),
         "estado": top("estado_negocio", 3),
+        "etapa_funil": top("etapa_funil"),
+        "temperatura": [{"valor": v, "n": q} for v, q in temps.most_common()],
+        "temperatura_dominante": temps.most_common(1)[0][0] if temps else "",
         "motivo_perda": top("motivo_perda"),
         "qualificacao": top("qualificacao"),
         "origem": top("origem"),

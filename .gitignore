@@ -10,8 +10,11 @@ venv/
 dashboard/.env
 zapi-config.env
 proposals/monitor_config.env
-tracking-worker/.dev.vars
-tracking-worker/.wrangler/
+deploy/worker/node_modules/
+deploy/worker/.wrangler/
+deploy/**/.env
+deploy/**/.dev.vars
+
 .claude/
 gws_accounts/
 
@@ -19,6 +22,7 @@ gws_accounts/
 dashboard/*.db
 dashboard/*.db-shm
 dashboard/*.db-wal
+dashboard/*.db.bak*
 dashboard/logs/
 dashboard/out/
 *.log
@@ -37,3 +41,10 @@ client_secret_*.json
 
 # Pacotes gerados
 *.zip
+
+# Deploy (Cloudflare Containers) — segredos e artefatos locais nunca entram no repo
+deploy/**/.env
+deploy/**/.dev.vars
+deploy/worker/node_modules/
+deploy/worker/.wrangler/
+deploy/seed/

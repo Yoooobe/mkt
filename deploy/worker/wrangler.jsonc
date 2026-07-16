@@ -1,0 +1,34 @@
+// 4unik.mail — Worker que expõe o dashboard rodando em Cloudflare Containers.
+// Deploy: `wrangler deploy` a partir de deploy/worker (ver deploy/README.md).
+{
+  "name": "gws4unik-dashboard",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-15",
+  "containers": [
+    {
+      "class_name": "DashboardContainer",
+      // Dockerfile fica em deploy/, mas o contexto de build é a raiz do repo
+      // (precisa de dashboard/ e proposals/). Caminhos relativos a este arquivo.
+      "image": "../Dockerfile",
+      "image_build_context": "../..",
+      // SQLite = 1 escritor. NUNCA aumente: duas instâncias replicando o mesmo
+      // caminho no R2 corrompem a réplica do Litestream.
+      "max_instances": 1,
+      "instance_type": "basic"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DASHBOARD",
+        "class_name": "DashboardContainer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["DashboardContainer"]
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+# Litestream (v0.5.x) — replica o SQLite do dashboard para o R2 (S3-compatible).
+# Credenciais SEMPRE via env (secrets do Worker repassados ao container):
+#   R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_ENDPOINT
+# R2_ENDPOINT = https://<ACCOUNT_ID>.r2.cloudflarestorage.com
+dbs:
+  - path: /app/gws-4unik/dashboard/dashboard.db
+    replica:
+      type: s3
+      bucket: gws4unik-db
+      path: dashboard.db
+      endpoint: ${R2_ENDPOINT}
+      access-key-id: ${R2_ACCESS_KEY_ID}
+      secret-access-key: ${R2_SECRET_ACCESS_KEY}
+      # R2 não suporta o default de região us-east-1 implícito em alguns SDKs;
+      # "auto" é o valor documentado pela Cloudflare.
+      region: auto
+      force-path-style: true
