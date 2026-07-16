@@ -17,6 +17,7 @@ import socket
 import subprocess
 import sys
 from datetime import datetime, timedelta
+from email.utils import parseaddr
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -656,6 +657,24 @@ def _hdr(msg, nome):
     return ""
 
 
+def _is_our_message(msg, sender=None, known_msgids=None, sender_emails=None):
+    """Reconhece mensagens enviadas por nós sem depender do nome da marca.
+
+    O Gmail marca cópias da caixa de saída com o label SENT. O fallback por
+    endereço cobre respostas retornadas pela API sem labels e aliases dos
+    remetentes cadastrados.
+    """
+    if msg.get("id") in (known_msgids or set()):
+        return True
+    if "SENT" in set(msg.get("labelIds") or []):
+        return True
+    frm = parseaddr(_hdr(msg, "From"))[1].strip().lower()
+    nossos = {str(x or "").strip().lower() for x in (sender_emails or set()) if x}
+    if sender and sender.get("email"):
+        nossos.add(sender["email"].strip().lower())
+    return bool(frm and frm in nossos)
+
+
 def _html_resposta(paragrafos, botao=None, assinatura=None):
     assinatura = assinatura or email_templates.ASSINATURA
     ps = "".join(f'<p style="margin:0 0 14px">{p}</p>' for p in paragrafos if p.strip())
@@ -853,7 +872,7 @@ def scan_replies(only_thread=""):
     if not online():
         return {"online": False}
     c = db.conn()
-    rows = c.execute("""SELECT s.thread, s.email, cp.sender_id,
+    rows = c.execute("""SELECT s.thread, s.msgid, s.email, cp.sender_id,
                                ct.nome, ct.empresa, ct.modulos, ct.mensalidades,
                                ct.primeiro_envio, ct.validade
                         FROM sends s JOIN contacts ct ON ct.email=s.email
@@ -863,6 +882,10 @@ def scan_replies(only_thread=""):
     vistos = set(r["msgid"] for r in c.execute("SELECT msgid FROM replies").fetchall())
     senders = {s["id"]: dict(s) for s in c.execute("SELECT * FROM senders").fetchall()}
     c.close()
+    nossos_ids = {}
+    for r in rows:
+        nossos_ids.setdefault(r["thread"], set()).add(r["msgid"])
+    sender_emails = {s.get("email", "").lower() for s in senders.values() if s.get("email")}
     feitos, novas = set(), 0
     for r in rows:
         tid = r["thread"]
@@ -878,13 +901,14 @@ def scan_replies(only_thread=""):
         msgs = t.get("messages", [])
         nosso_dt, nosso_ultimo = 0, ""
         for m in msgs:
-            if "4unik" in _hdr(m, "From"):
+            if _is_our_message(m, sender, nossos_ids.get(tid), sender_emails):
                 d = int(m.get("internalDate", "0") or 0)
                 if d >= nosso_dt:
                     nosso_dt, nosso_ultimo = d, _corpo_texto(m["payload"])
         for m in msgs:
             frm = _hdr(m, "From")
-            if "4unik" in frm or m["id"] in vistos or SKIP_FROM_REPLY.search(frm):
+            if (_is_our_message(m, sender, nossos_ids.get(tid), sender_emails)
+                    or m["id"] in vistos or SKIP_FROM_REPLY.search(frm)):
                 continue
             if int(m.get("internalDate", "0") or 0) <= nosso_dt:
                 continue  # mensagem anterior ao nosso envio — não é resposta a esta campanha
@@ -1180,6 +1204,15 @@ def _h_campaign_send(payload):
             c.close()
             log(f"fora da janela [{camp['nome']} → {email}] — reagendado para {prox}")
             return f"fora da janela — reagendado para {prox}"
+        # Bloqueios definitivos não podem deixar next_send_at vencido. Caso
+        # contrário, o gatilho de 10 s recria indefinidamente a mesma tarefa e
+        # a interface parece dizer que a campanha "não para". Resposta pausa
+        # explicitamente o contato; demais bloqueios devolvem-no a pendente e
+        # exigem uma nova ativação/agendamento depois que a causa for revisada.
+        novo_status = ("pausado_resposta" if "contato respondeu" in motivo else "pendente")
+        c.execute("UPDATE campaign_contacts SET status=?, next_send_at=NULL "
+                  "WHERE campaign_id=? AND email=?", (novo_status, cid, email))
+        c.commit()
         c.close()
         log(f"envio bloqueado [{camp['nome']} → {email} etapa {etapa}]: {motivo}")
         return f"bloqueado: {motivo}"

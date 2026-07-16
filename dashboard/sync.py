@@ -10,7 +10,9 @@ import io
 import json
 import re
 import subprocess
+import os
 from datetime import datetime
+from email.utils import parseaddr
 from pathlib import Path
 
 import db
@@ -28,8 +30,14 @@ except ImportError:
 EMAIL_RE = re.compile(r"^[\w.+-]+@[\w-]+\.[\w.-]+$")
 
 
-def _gws(args):
-    out = subprocess.run(["gws", "gmail"] + args, capture_output=True, text=True, timeout=60)
+def _gws(args, home=None):
+    env = None
+    if home:
+        env = os.environ.copy()
+        env["HOME"] = str(home)
+        env["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
+    out = subprocess.run(["gws", "gmail"] + args, capture_output=True, text=True,
+                         timeout=60, env=env)
     try:
         return json.loads(out.stdout)
     except Exception:
@@ -136,17 +144,61 @@ def import_drafts():
     return {"respostas": n}
 
 
+def _thread_identity(thread_id):
+    """Remetente/caixa e IDs enviados conhecidos para uma thread de campanha."""
+    c = db.conn()
+    row = c.execute(
+        """SELECT sd.email AS sender_email, sd.slug
+             FROM sends s LEFT JOIN campaigns cp ON cp.id=s.campaign_id
+             LEFT JOIN senders sd ON sd.id=cp.sender_id
+            WHERE s.thread=? ORDER BY s.id DESC LIMIT 1""",
+        (thread_id,),
+    ).fetchone()
+    ids = {r["msgid"] for r in c.execute(
+        "SELECT msgid FROM sends WHERE thread=? AND msgid!=''", (thread_id,)
+    ).fetchall()}
+    emails = {r["email"].lower() for r in c.execute(
+        "SELECT email FROM senders WHERE email!=''"
+    ).fetchall()}
+    c.close()
+    sender_email = (row["sender_email"] if row else "") or ""
+    slug = (row["slug"] if row else "") or ""
+    home = (db.GWS_DIR.parent / "gws_accounts" / slug) if slug else None
+    return sender_email.lower(), home, ids, emails
+
+
 def check_thread_via_gws(thread_id, email):
-    """Leitura via gws: detecta resposta externa na thread. Retorna nº de msgs externas."""
+    """Detecta somente respostas posteriores ao último envio da nossa caixa.
+
+    Mensagens com label SENT, Gmail id já gravado em sends ou endereço de um
+    remetente cadastrado são nossas. Se a thread não contiver nenhum envio
+    reconhecível, a verificação falha fechada (None) em vez de pausar o lead.
+    """
+    sender_email, home, our_ids, sender_emails = _thread_identity(thread_id)
     t = _gws(["users", "threads", "get", "--params",
-              json.dumps({"userId": "me", "id": thread_id, "format": "metadata"})])
+              json.dumps({"userId": "me", "id": thread_id, "format": "metadata"})],
+             home=home)
     if not t:
         return None  # falha de rede/thread — quem chamou decide (fila faz retry)
-    externas = 0
-    for m in t.get("messages", []):
+    msgs = t.get("messages", [])
+
+    def nossa(m):
         frm = next((h["value"] for h in m.get("payload", {}).get("headers", [])
                     if h["name"].lower() == "from"), "")
-        if frm and all(dom not in frm.lower() for dom in ("4unik", "4unik.com.br")):
+        addr = parseaddr(frm)[1].strip().lower()
+        return (m.get("id") in our_ids or "SENT" in set(m.get("labelIds") or [])
+                or bool(addr and addr in (sender_emails | {sender_email})))
+
+    nossos = [m for m in msgs if nossa(m)]
+    if not nossos:
+        return None
+    nosso_dt = max(int(m.get("internalDate", "0") or 0) for m in nossos)
+    externas = 0
+    for m in msgs:
+        frm = next((h["value"] for h in m.get("payload", {}).get("headers", [])
+                    if h["name"].lower() == "from"), "")
+        if (frm and not nossa(m)
+                and int(m.get("internalDate", "0") or 0) > nosso_dt):
             externas += 1
     if externas:
         c = db.conn()

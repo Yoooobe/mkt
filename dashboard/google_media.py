@@ -133,6 +133,31 @@ def _digits(value):
     return "".join(c for c in (value or "") if c.isdigit())
 
 
+def _service_account_token(scopes):
+    """Token da conta de serviço local, quando ela estiver configurada."""
+    credentials_file = _env().get("GA4_CREDENTIALS_JSON", "").strip()
+    if not credentials_file or not Path(credentials_file).expanduser().exists():
+        return None
+    from google.oauth2 import service_account
+    from google.auth.transport.requests import Request
+    creds = service_account.Credentials.from_service_account_file(
+        str(Path(credentials_file).expanduser()),
+        scopes=scopes,
+    )
+    creds.refresh(Request())
+    return creds.token
+
+
+def _ga4_read_token():
+    """Token de leitura da service account da propriedade GA4, quando presente."""
+    return _service_account_token(["https://www.googleapis.com/auth/analytics.readonly"])
+
+
+def _gtm_read_token():
+    """Token GTM: requer que a conta de serviço seja Viewer no container/conta."""
+    return _service_account_token(["https://www.googleapis.com/auth/tagmanager.readonly"])
+
+
 def ga4_report(days=30):
     prop = _env().get("GOOGLE_GA4_PROPERTY_ID", "").strip()
     if not prop:
@@ -141,15 +166,16 @@ def ga4_report(days=30):
             "metrics": [{"name": "sessions"}, {"name": "activeUsers"},
                         {"name": "conversions"}, {"name": "eventCount"}]}
     data = _request(f"https://analyticsdata.googleapis.com/v1beta/properties/{_digits(prop)}:runReport",
-                    method="POST", payload=body)
+                    method="POST", payload=body, access_token=_ga4_read_token())
     vals = (data.get("rows") or [{}])[0].get("metricValues") or []
     names = ("sessoes", "usuarios_ativos", "conversoes", "eventos")
     return {name: int(vals[i].get("value", 0)) if i < len(vals) else 0 for i, name in enumerate(names)} | {"dias": days}
 
 
 def ga4_resources():
-    """Lista propriedades e streams web disponíveis para o OAuth autorizado."""
-    data = _request("https://analyticsadmin.googleapis.com/v1alpha/accountSummaries")
+    """Lista propriedades e streams pela conta de serviço configurada."""
+    token = _ga4_read_token()
+    data = _request("https://analyticsadmin.googleapis.com/v1alpha/accountSummaries", access_token=token)
     out = []
     for account in data.get("accountSummaries", []):
         for prop in account.get("propertySummaries", []):
@@ -157,7 +183,8 @@ def ga4_resources():
             streams = []
             if pid:
                 try:
-                    s = _request(f"https://analyticsadmin.googleapis.com/v1alpha/properties/{pid}/dataStreams")
+                    s = _request(f"https://analyticsadmin.googleapis.com/v1alpha/properties/{pid}/dataStreams",
+                                 access_token=token)
                     streams = [{"id": _digits(x.get("name", "")), "nome": x.get("displayName", ""),
                                 "measurement_id": x.get("webStreamData", {}).get("measurementId", "")}
                                for x in s.get("dataStreams", []) if x.get("type") == "WEB_DATA_STREAM"]
@@ -225,9 +252,32 @@ def gtm_summary():
     if not account or not container:
         raise RuntimeError("Informe Account ID e Container ID do Google Tag Manager.")
     base = f"https://tagmanager.googleapis.com/tagmanager/v2/accounts/{account}/containers/{container}"
-    tags = _request(base + "/tags").get("tag", [])
-    triggers = _request(base + "/triggers").get("trigger", [])
+    token = _gtm_read_token()
+    tags = _request(base + "/tags", access_token=token).get("tag", [])
+    triggers = _request(base + "/triggers", access_token=token).get("trigger", [])
     return {"tags": len(tags), "triggers": len(triggers), "container": container}
+
+
+def gtm_resources():
+    """Lista contas e containers GTM acessíveis, sem editar nada."""
+    token = _gtm_read_token()
+    data = _request("https://tagmanager.googleapis.com/tagmanager/v2/accounts", access_token=token)
+    contas = []
+    for account in data.get("account", []):
+        aid = _digits(account.get("path", ""))
+        if not aid:
+            continue
+        containers = _request(
+            f"https://tagmanager.googleapis.com/tagmanager/v2/accounts/{aid}/containers",
+            access_token=token,
+        ).get("container", [])
+        contas.append({
+            "id": aid, "nome": account.get("name", ""),
+            "containers": [{"id": _digits(x.get("path", "")), "nome": x.get("name", ""),
+                            "public_id": x.get("publicId", "")}
+                           for x in containers],
+        })
+    return {"contas": contas}
 
 
 def ads_report(days=30):

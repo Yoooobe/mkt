@@ -365,6 +365,16 @@ def _steps_existentes(cid):
     return n
 
 
+def _geracao_cancelada(cid):
+    """A pausa pode acontecer enquanto o Claude ainda responde.
+
+    O status persistido é a fonte de verdade: a thread antiga não pode gravar
+    templates nem voltar a marcar o build como pronto depois do cancelamento.
+    """
+    p = build_progress(cid) or {}
+    return p.get("status") == "erro" and p.get("etapa") == "pausada manualmente"
+
+
 def _gerar_loop(cid, objetivo, emails, cad_min, kb, imgs, brief):
     """Gera os emails do plano um a um, PULANDO os que já têm step salvo (retomada idempotente).
     Compartilhado pelo build inicial e pela retomada — continua de onde a campanha parou."""
@@ -372,10 +382,16 @@ def _gerar_loop(cid, objetivo, emails, cad_min, kb, imgs, brief):
                         for i, e in enumerate(emails, start=1))
     feitos = _steps_existentes(cid)
     for i in range(feitos + 1, len(emails) + 1):
+        if _geracao_cancelada(cid):
+            return False
         e = emails[i - 1]
         _set_progress(cid, etapa=f"escrevendo e-mail {i} de {len(emails)}: {e.get('nome', '')}",
                       feitos=i - 1)
         full = _gerar_email(objetivo, e, angulos, i, len(emails), kb, imgs, brief)
+        # A chamada acima pode levar minutos. Revalida antes de qualquer escrita
+        # para honrar uma pausa feita enquanto a IA estava trabalhando.
+        if _geracao_cancelada(cid):
+            return False
         c = db.conn()
         c.execute("""INSERT INTO templates_ai(nome,assunto,preheader,cta,cta_url,inner_html,texto_plano,status,origem)
                      VALUES(?,?,?,?,?,?,?,'pendente','ia')""",
@@ -389,7 +405,10 @@ def _gerar_loop(cid, objetivo, emails, cad_min, kb, imgs, brief):
         c.commit()
         c.close()
         _set_progress(cid, feitos=i)
+    if _geracao_cancelada(cid):
+        return False
     _set_progress(cid, status="pronto", etapa="concluído", feitos=len(emails))
+    return True
 
 
 def _cadencia_desc(cad_min, cad_max):

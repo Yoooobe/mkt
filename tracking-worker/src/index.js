@@ -45,11 +45,12 @@ async function verifyToken(token, secret) {
   catch { return null; }
 }
 
-// Heurística de prefetch de máquina (Apple Mail Privacy / Google proxy) p/ descontar.
+// Heurística de prefetch de máquina. GoogleImageProxy NÃO é descartado: o Gmail
+// usa o proxy tanto em aberturas reais quanto em cache, então marcá-lo como bot
+// produz falso negativo. Apple Mail Privacy/preload continuam aproximados.
 function isPrefetch(ua) {
   const u = (ua || "").toLowerCase();
-  return u.includes("googleimageproxy") || u.includes("ggpht") ||
-         u.includes("applemail") || u.includes("apple mail") ||
+  return u.includes("applemail") || u.includes("apple mail") ||
          u.includes("preload") ? 1 : 0;
 }
 

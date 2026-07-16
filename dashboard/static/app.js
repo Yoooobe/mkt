@@ -184,7 +184,7 @@ async function vInicio() {
         <span><i class="b-click" style="background:#45bbd8"></i>cliques</span>
         <span><i class="b-resp" style="background:#29c287"></i>respostas</span>
       </div>
-      ${!d.tracking_ativo ? `<p class="muted" style="margin-top:12px">📡 Rastreio de abertura/clique ainda não configurado — defina <code>TRACKING_BASE_URL</code>, <code>TRACKING_SECRET</code> e <code>TRACKING_SYNC_KEY</code> no ambiente. Os demais números são em tempo real.</p>` : `<p class="muted" style="margin-top:12px">📬 Abertura é aproximada (Gmail/Apple inflam por prefetch — ${d.abertos_maquina} aberturas de máquina já descontadas). Clique e resposta são os sinais sólidos. <span style="color:#157a52">● ao vivo</span> — atualiza sozinho a cada 45s.</p>`}
+      ${!d.tracking_ativo ? `<p class="muted" style="margin-top:12px">📡 Rastreio de abertura/clique ainda não configurado — defina <code>TRACKING_BASE_URL</code>, <code>TRACKING_SECRET</code> e <code>TRACKING_SYNC_KEY</code> no ambiente. Os demais números são em tempo real.</p>` : `<p class="muted" style="margin-top:12px">📬 Abertura é aproximada: o proxy do Gmail é aceito e prefetch puro é descontado (${d.abertos_maquina}). Um clique humano também confirma a abertura. <span style="color:#157a52">● ao vivo</span> — atualiza sozinho a cada 45s.</p>`}
     </div>`;
   // auto-atualização enquanto a Visão Geral estiver aberta (quase em tempo real)
   if (inicioTimer) clearInterval(inicioTimer);
@@ -1344,7 +1344,7 @@ async function vMidia() {
   const pill = (ok, label) => `<span class="${ok ? "media-ok" : "media-off"}">${ok ? "●" : "○"} ${label}</span>`;
   view.innerHTML = `
     <div class="toolbar"><h2 style="margin:0">Mídia & Google</h2><span class="sp"></span>
-      <button id="gm-discover">⌕ Encontrar GA4</button><button class="primary" id="gm-sync">↻ Sincronizar métricas</button></div>
+      <button id="gm-discover">⌕ Encontrar GA4</button><button id="gm-discover-gtm">⌕ Encontrar GTM</button><button class="primary" id="gm-sync">↻ Sincronizar métricas</button></div>
     <p class="muted">Consolida dados de Analytics, Tag Manager e Ads para acompanhar campanhas. A integração é <b>somente leitura</b>: não publica tags, nem cria ou altera anúncios.</p>
     <div class="media-health">${pill(s.ga4_pronto, "GA4")} ${pill(s.gtm_pronto, "Tag Manager")} ${pill(s.ads_pronto, "Google Ads")}</div>
     <div class="card" id="gm-result"><div class="media-connected">
@@ -1429,6 +1429,14 @@ async function vMidia() {
         ${(p.streams || []).map(s => `<button class="green" onclick="usarGa4('${esc(p.id)}','${esc(s.measurement_id)}')">Usar ${esc(s.nome || s.measurement_id)} · ${esc(s.measurement_id || "sem Measurement ID")}</button>`).join(" ") || '<small class="muted">Sem stream web visível.</small>'}</div>`).join("");
     } catch (e) { box.innerHTML = `<span class="form-feedback error">${esc(e.message)}</span>`; }
   };
+  document.getElementById("gm-discover-gtm").onclick = async () => {
+    const box = document.getElementById("gm-result"); box.innerHTML = '<span class="muted">procurando contas e containers GTM…</span>';
+    try {
+      const r = await api("/api/google-media/gtm-resources");
+      if (!r.contas?.length) { box.innerHTML = '<span class="muted">Nenhuma conta GTM acessível. Dê acesso de Visualizador à conta de serviço no GTM e tente novamente.</span>'; return; }
+      box.innerHTML = r.contas.map(a => `<div class="media-metric"><b>${esc(a.nome)}</b><small class="muted"> · Account ${esc(a.id)}</small><br>${(a.containers || []).map(c => `<button class="green" onclick="usarGtm('${esc(a.id)}','${esc(c.id)}')">Usar ${esc(c.nome || c.public_id)} · ${esc(c.public_id || c.id)}</button>`).join(' ') || '<small class="muted">Sem container visível.</small>'}</div>`).join('');
+    } catch (e) { box.innerHTML = `<span class="form-feedback error">${esc(e.message)}</span>`; }
+  };
   document.getElementById("gm-utm").onclick = async () => {
     try {
       const p = new URLSearchParams({url: document.getElementById("gm-url").value.trim(), campaign: document.getElementById("gm-campaign").value.trim(), source: document.getElementById("gm-source").value.trim(), medium: document.getElementById("gm-medium").value.trim()});
@@ -1443,6 +1451,12 @@ function usarGa4(propertyId, measurementId) {
   document.getElementById("gm-ga4").value = propertyId;
   document.getElementById("gm-measurement").value = measurementId;
   toast("GA4 selecionado — clique em Salvar integração", 3000);
+}
+
+function usarGtm(accountId, containerId) {
+  document.getElementById("gm-gtm-account").value = accountId;
+  document.getElementById("gm-gtm-container").value = containerId;
+  toast("GTM selecionado — clique em Salvar integração", 3000);
 }
 
 /* ---------- TELA: Site & Ads (GA4) ---------- */

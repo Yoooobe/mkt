@@ -608,12 +608,16 @@ def resumo_audiencia(emails):
     if not emails:
         return {"total": 0}
     c = conn()
-    qs = ",".join("?" * len(emails))
-    rows = c.execute(
-        f"""SELECT porte_assinantes, porte_funcionarios, erp, cargo, estado_negocio,
+    # SQLite costuma limitar uma instrução a 999 parâmetros. Bases grandes
+    # continuam sendo resumidas em blocos, mantendo o loop estratégico ativo.
+    rows = []
+    campos = """porte_assinantes, porte_funcionarios, erp, cargo, estado_negocio,
                    motivo_perda, qualificacao, origem, tags, envios, respondeu, ultimo_envio,
-                   telefone, enriquecimento, etapa_funil
-            FROM contacts WHERE email IN ({qs})""", emails).fetchall()
+                   telefone, enriquecimento, etapa_funil"""
+    for start in range(0, len(emails), 900):
+        bloco = emails[start:start + 900]
+        qs = ",".join("?" * len(bloco))
+        rows.extend(c.execute(f"SELECT {campos} FROM contacts WHERE email IN ({qs})", bloco).fetchall())
     c.close()
 
     def top(campo, n=4):
@@ -685,6 +689,45 @@ def click_bot_trackids(c, janela_seg):
         if en is not None and (ct - en) < janela_seg:
             bot[r["track_id"]] = f"clicou +{int(ct - en)}s do envio"
     return bot
+
+
+def effective_open_trackids(c, janela_seg, campaign_id=None, sender_id=None):
+    """Track IDs com abertura comercialmente confirmada.
+
+    O Gmail sempre serve imagens pelo GoogleImageProxy, inclusive quando uma
+    pessoa abre a mensagem. Portanto esse proxy, sozinho, não é evidência de
+    prefetch. Apple Mail Privacy/preload continuam descontados, mas um clique
+    humano no mesmo envio confirma que a mensagem foi aberta.
+    """
+    joins = " JOIN sends s ON s.track_id=e.track_id"
+    filtros = ["e.track_id!=''"]
+    params = []
+    if sender_id is not None:
+        joins += " JOIN campaigns cp ON cp.id=s.campaign_id"
+        filtros.append("cp.sender_id=?")
+        params.append(sender_id)
+    if campaign_id is not None:
+        filtros.append("s.campaign_id=?")
+        params.append(campaign_id)
+    where = " AND ".join(filtros)
+    rows = c.execute(
+        f"""SELECT DISTINCT e.track_id, e.type, e.prefetch, e.ua
+             FROM events e{joins} WHERE {where} AND e.type IN ('open','click')""",
+        params,
+    ).fetchall()
+    bots = set(click_bot_trackids(c, janela_seg))
+    confirmados = set()
+    for r in rows:
+        track_id = r["track_id"]
+        if r["type"] == "click":
+            if track_id not in bots:
+                confirmados.add(track_id)
+            continue
+        ua = (r["ua"] or "").lower()
+        google_proxy = "googleimageproxy" in ua or "ggpht" in ua
+        if not r["prefetch"] or google_proxy:
+            confirmados.add(track_id)
+    return confirmados
 
 
 # ---------------- guardrail de clientes (nunca prospectar quem já é cliente) ----------------

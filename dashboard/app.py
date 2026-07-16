@@ -546,12 +546,17 @@ def contact_launch_campaign_now(email: str, body: DisparoImediatoBody):
             c = db.conn()
             estado = c.execute("SELECT status,error FROM queue WHERE id=?", (qid,)).fetchone()
             c.close()
-            enviado = bool(estado and estado["status"] == "done")
-            erro = (estado["error"] if estado and estado["status"] != "done" else "")
+            nota_fila = (estado["error"] if estado else "") or ""
+            # A fila usa status=done também para bloqueios deliberados. Só um
+            # retorno "msg <gmail-id>" prova que o Gmail aceitou o envio.
+            enviado = bool(estado and estado["status"] == "done"
+                           and nota_fila.startswith("msg "))
+            erro = "" if enviado else (nota_fila or "disparo não concluído")
     engine.log(f"DISPARO MANUAL campanha {body.campaign_id} → {email} ({'enviado' if enviado else 'na fila'})")
     return {"ok": True, "campaign_id": body.campaign_id, "email": email, "agendados": agendados,
             "enviado": enviado, "aguardando_conexao": not engine.online(), "erro": erro,
-            "nota": "Primeiro e-mail enviado agora." if enviado else "Disparo registrado na fila; será enviado assim que a conexão estiver disponível."}
+            "nota": ("Primeiro e-mail enviado agora." if enviado else
+                     "O e-mail não foi enviado; revise o bloqueio informado antes de tentar novamente.")}
 
 
 @app.post("/api/contacts/{email}/campaign-ai")
@@ -1033,8 +1038,8 @@ def _campaign_payload(c, camp):
                          (camp["id"],)).fetchone()["n"]
     # métricas de engajamento desta campanha (events traz campaign_id; dedup por track_id/email)
     cid = camp["id"]
-    abertos = c.execute("SELECT COUNT(DISTINCT track_id) AS n FROM events "
-                        "WHERE campaign_id=? AND type='open' AND prefetch=0", (cid,)).fetchone()["n"]
+    abertos = len(db.effective_open_trackids(c, engine.BOT_CLICK_JANELA_SEG,
+                                             campaign_id=cid))
     cliques = c.execute("SELECT COUNT(DISTINCT track_id) AS n FROM events "
                         "WHERE campaign_id=? AND type='click'", (cid,)).fetchone()["n"]
     descadastros = c.execute("SELECT COUNT(DISTINCT email) AS n FROM events "
@@ -1379,10 +1384,25 @@ def campaign_activate(cid: int, body: Optional[AtivarBody] = None):
 @app.post("/api/campaigns/{cid}/pause")
 def campaign_pause(cid: int):
     c = db.conn()
+    camp = c.execute("SELECT id FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if not camp:
+        c.close()
+        return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
     c.execute("UPDATE campaigns SET status='pausada' WHERE id=?", (cid,))
+    # Tarefas ainda não iniciadas não devem sobreviver ao comando de pausa.
+    c.execute("UPDATE queue SET status='done', updated_at=?, "
+              "error='cancelado: campanha pausada' "
+              "WHERE tipo='campaign_send' AND status='pending' AND payload LIKE ?",
+              (db.now(), f'%\"campaign_id\": {cid},%'))
     c.commit()
     c.close()
-    return {"id": cid, "status": "pausada"}
+    build = ai.build_progress(cid)
+    geracao_cancelada = bool(build and build.get("status") == "gerando")
+    if geracao_cancelada:
+        build.update({"status": "erro", "erro": "Geração interrompida ao pausar a campanha.",
+                      "erro_tipo": "outro", "etapa": "pausada manualmente"})
+        db.meta_set(f"build_{cid}", json.dumps(build, ensure_ascii=False))
+    return {"id": cid, "status": "pausada", "geracao_cancelada": geracao_cancelada}
 
 
 @app.post("/api/campaigns/{cid}/resume-build")
@@ -1432,9 +1452,8 @@ def campaign_delete(cid: int):
 def _sender_stats(c, sid):
     enviados = c.execute("""SELECT COUNT(*) AS n FROM sends s JOIN campaigns cp ON cp.id=s.campaign_id
                             WHERE cp.sender_id=?""", (sid,)).fetchone()["n"]
-    abertos = c.execute("""SELECT COUNT(DISTINCT e.track_id) AS n FROM events e
-                           JOIN sends s ON s.track_id=e.track_id JOIN campaigns cp ON cp.id=s.campaign_id
-                           WHERE e.type='open' AND e.prefetch=0 AND cp.sender_id=?""", (sid,)).fetchone()["n"]
+    abertos = len(db.effective_open_trackids(c, engine.BOT_CLICK_JANELA_SEG,
+                                             sender_id=sid))
     cliques = c.execute("""SELECT COUNT(DISTINCT e.track_id) AS n FROM events e
                            JOIN sends s ON s.track_id=e.track_id JOIN campaigns cp ON cp.id=s.campaign_id
                            WHERE e.type='click' AND cp.sender_id=?""", (sid,)).fetchone()["n"]
@@ -1567,12 +1586,14 @@ def sender_autoreply(sid: int, b: SenderAutoReply):
 # ---------------- métricas ----------------
 
 def _tracking_stats(c):
-    """Abertura/clique a partir de events (dedup por track_id; abertura humana desconta prefetch)."""
+    """Abertura/clique deduplicados; proxy Gmail conta e prefetch puro não."""
     rastreaveis = c.execute("SELECT COUNT(*) AS n FROM sends WHERE track_id != ''").fetchone()["n"]
-    abertos = c.execute("SELECT COUNT(DISTINCT track_id) AS n FROM events "
-                        "WHERE type='open' AND prefetch=0").fetchone()["n"]
-    abertos_maquina = c.execute("SELECT COUNT(DISTINCT track_id) AS n FROM events "
-                               "WHERE type='open' AND prefetch=1").fetchone()["n"]
+    abertos_ids = db.effective_open_trackids(c, engine.BOT_CLICK_JANELA_SEG)
+    abertos = len(abertos_ids)
+    maquina_ids = {r["track_id"] for r in c.execute(
+        "SELECT DISTINCT track_id FROM events WHERE type='open' AND prefetch=1 AND track_id!=''"
+    ).fetchall()} - abertos_ids
+    abertos_maquina = len(maquina_ids)
     # cliques só de HUMANO — desconta os de scanner de segurança (ver db.click_bot_trackids)
     bots = set(db.click_bot_trackids(c, engine.BOT_CLICK_JANELA_SEG))
     todos_clicks = {r["track_id"] for r in c.execute(
@@ -1642,9 +1663,15 @@ def metrics_overview():
         "SELECT data AS d, COUNT(*) AS n FROM sends WHERE data >= ? GROUP BY data", (dias[0],)).fetchall()}
     resp_d = {r["d"]: r["n"] for r in c.execute(
         "SELECT data AS d, COUNT(*) AS n FROM replies WHERE data >= ? GROUP BY data", (dias[0],)).fetchall()}
-    op_d = {r["d"]: r["n"] for r in c.execute(
-        "SELECT substr(ts,1,10) AS d, COUNT(DISTINCT track_id) AS n FROM events "
-        "WHERE type='open' AND prefetch=0 AND substr(ts,1,10) >= ? GROUP BY d", (dias[0],)).fetchall()}
+    abertos_ids = db.effective_open_trackids(c, engine.BOT_CLICK_JANELA_SEG)
+    op_d = {}
+    for r in c.execute(
+        """SELECT track_id, substr(MIN(ts),1,10) AS d FROM events
+             WHERE type IN ('open','click') AND substr(ts,1,10) >= ? GROUP BY track_id""",
+        (dias[0],),
+    ).fetchall():
+        if r["track_id"] in abertos_ids:
+            op_d[r["d"]] = op_d.get(r["d"], 0) + 1
     # cliques por dia: distintos por track_id, excluindo os de scanner (bot)
     _bots = set(db.click_bot_trackids(c, engine.BOT_CLICK_JANELA_SEG))
     cl_d, _vistos = {}, set()
@@ -1759,7 +1786,9 @@ def metrics_breakdown(kind: str):
     itens = []
     if kind in ("cliques", "cliques_bot", "aberturas"):
         tipo = "open" if kind == "aberturas" else "click"
-        extra = " AND prefetch=0" if kind == "aberturas" else ""
+        effective_opens = (db.effective_open_trackids(c, engine.BOT_CLICK_JANELA_SEG)
+                           if kind == "aberturas" else set())
+        extra = ""
         bots = db.click_bot_trackids(c, engine.BOT_CLICK_JANELA_SEG) if tipo == "click" else {}
         camp = _camp_nomes(c)
         rows = c.execute(
@@ -1768,6 +1797,8 @@ def metrics_breakdown(kind: str):
                 FROM events WHERE type=?{extra}
                 GROUP BY track_id ORDER BY quando DESC""", (tipo,)).fetchall()
         for r in rows:
+            if kind == "aberturas" and r["track_id"] not in effective_opens:
+                continue
             eh_bot = r["track_id"] in bots
             if kind == "cliques" and eh_bot:        # humanos: pula scanner
                 continue
@@ -1940,6 +1971,14 @@ def google_media_ga4_resources():
         return JSONResponse({"erro": str(exc)}, status_code=409)
 
 
+@app.get("/api/google-media/gtm-resources")
+def google_media_gtm_resources():
+    try:
+        return google_media.gtm_resources()
+    except Exception as exc:
+        return JSONResponse({"erro": str(exc)}, status_code=409)
+
+
 @app.post("/api/google-media/ga4-contact-goals")
 def google_media_ga4_contact_goals():
     """Configura os eventos-chave oficiais de aquisição no GA4 sem duplicá-los."""
@@ -1979,9 +2018,8 @@ def site_campanhas(days: int = 28):
         slug = camp["slug"] or db.slugify(camp["nome"]) or f"c{camp['id']}"
         enviados = c.execute("SELECT COUNT(*) AS n FROM sends WHERE campaign_id=?",
                              (camp["id"],)).fetchone()["n"]
-        abertos = c.execute("SELECT COUNT(DISTINCT track_id) AS n FROM events "
-                            "WHERE campaign_id=? AND type='open' AND prefetch=0",
-                            (camp["id"],)).fetchone()["n"]
+        abertos = len(db.effective_open_trackids(c, engine.BOT_CLICK_JANELA_SEG,
+                                                 campaign_id=camp["id"]))
         cliques = [r["track_id"] for r in c.execute(
             "SELECT DISTINCT track_id FROM events WHERE campaign_id=? AND type='click'",
             (camp["id"],)).fetchall() if r["track_id"] not in bots]
