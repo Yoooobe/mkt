@@ -48,7 +48,9 @@ fi
 # --- 3. restore do SQLite via Litestream --------------------------------------
 if [ ! -f "$DB_PATH" ]; then
   echo "[entrypoint] restaurando dashboard.db do R2..."
-  litestream restore -if-replica-exists -config /etc/litestream.yml "$DB_PATH"
+  # Não pode derrubar o boot (set -e): sem réplica/creds o fallback abaixo decide.
+  litestream restore -if-replica-exists -config /etc/litestream.yml "$DB_PATH" \
+    || echo "[entrypoint] litestream restore falhou — tentando seed cru"
   if [ -f "$DB_PATH" ]; then
     echo "[entrypoint] restore concluído"
   elif [ -n "${R2_ENDPOINT:-}" ] && curl -fsS --aws-sigv4 "aws:amz:auto:s3" \
@@ -65,5 +67,17 @@ fi
 
 # --- 4. replicação contínua em volta do uvicorn -------------------------------
 cd "$APP_ROOT/dashboard"
-exec litestream replicate -config /etc/litestream.yml \
-  -exec "python -m uvicorn app:app --host 0.0.0.0 --port 8000"
+
+# Sanity check das credenciais R2 (HEAD no bucket). Se falharem, subir o app
+# MESMO ASSIM (sem replicação) para o dashboard ficar acessível e diagnosticável
+# — melhor que crash-loop silencioso. O log grita o motivo.
+if curl -fsS --aws-sigv4 "aws:amz:auto:s3" \
+     --user "${R2_ACCESS_KEY_ID:-x}:${R2_SECRET_ACCESS_KEY:-x}" \
+     "${R2_ENDPOINT:-http://invalid}/${BUCKET}?list-type=2&max-keys=1" -o /dev/null; then
+  echo "[entrypoint] credenciais R2 OK — replicação Litestream ativa"
+  exec litestream replicate -config /etc/litestream.yml \
+    -exec "python -m uvicorn app:app --host 0.0.0.0 --port 8000"
+else
+  echo "[entrypoint] ERRO: credenciais/endpoint R2 inválidos — subindo SEM replicação (dados deste boot não persistem!)"
+  exec python -m uvicorn app:app --host 0.0.0.0 --port 8000
+fi
