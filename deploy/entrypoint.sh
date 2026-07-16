@@ -51,8 +51,15 @@ if [ ! -f "$DB_PATH" ]; then
   litestream restore -if-replica-exists -config /etc/litestream.yml "$DB_PATH"
   if [ -f "$DB_PATH" ]; then
     echo "[entrypoint] restore concluído"
+  elif [ -n "${R2_ENDPOINT:-}" ] && curl -fsS --aws-sigv4 "aws:amz:auto:s3" \
+         --user "${R2_ACCESS_KEY_ID}:${R2_SECRET_ACCESS_KEY}" \
+         "${R2_ENDPOINT}/${BUCKET}/seed/dashboard.db" -o "$DB_PATH"; then
+    # Bootstrap: snapshot cru enviado uma única vez (wrangler r2 object put).
+    # A partir daqui o litestream replicate assume e mantém a réplica oficial.
+    echo "[entrypoint] seed/dashboard.db aplicado (bootstrap inicial)"
   else
-    echo "[entrypoint] réplica inexistente — banco novo será criado pelo app (db.init)"
+    rm -f "$DB_PATH"
+    echo "[entrypoint] réplica e seed inexistentes — banco novo será criado pelo app (db.init)"
   fi
 fi
 

@@ -82,50 +82,42 @@ Opcionais (se usar GA4/Z-API na nuvem, adicione também ao `envVars` do
 
 ### 4. Seed inicial no R2 (uma vez, a partir da máquina local)
 
-**a) dashboard.db — via Litestream** (upload "cru" com aws/rclone **não**
-funciona: `litestream restore` só lê o formato de réplica do próprio
-Litestream). Rode a replicação local por ~1 minuto e interrompa:
+Tudo via `wrangler r2 object put` (usa o login OAuth do wrangler — não precisa
+das chaves S3 do R2, de Litestream local nem de aws/rclone).
+
+**a) dashboard.db — snapshot cru** em `seed/dashboard.db`. O entrypoint tenta
+primeiro `litestream restore` (réplica oficial); se ela ainda não existir,
+baixa este snapshot e o Litestream do container assume a replicação dali em
+diante:
 
 ```bash
 cd /Users/genautech/mkt/gws-4unik
-export LITESTREAM_ACCESS_KEY_ID='<R2_ACCESS_KEY_ID>'
-export LITESTREAM_SECRET_ACCESS_KEY='<R2_SECRET_ACCESS_KEY>'
-litestream replicate dashboard/dashboard.db \
-  's3://gws4unik-db/dashboard.db?endpoint=https://<ACCOUNT_ID>.r2.cloudflarestorage.com&region=auto&forcePathStyle=true'
-# aguarde o log de snapshot/sync e pare com Ctrl+C
+sqlite3 dashboard/dashboard.db ".backup /tmp/dashboard-seed.db"   # cópia consistente (WAL-safe)
+npx wrangler r2 object put gws4unik-db/seed/dashboard.db \
+  --file /tmp/dashboard-seed.db --remote
+rm /tmp/dashboard-seed.db
 ```
 
-Sanidade (deve listar os segmentos LTX replicados — Litestream v0.5+):
-
-```bash
-litestream ltx 's3://gws4unik-db/dashboard.db?endpoint=https://<ACCOUNT_ID>.r2.cloudflarestorage.com&region=auto&forcePathStyle=true'
-```
-
-> Pause o dashboard local (LaunchAgent) antes do seed e deixe-o pausado após o
-> deploy — dois processos replicando/escrevendo o mesmo banco no mesmo caminho
-> do R2 corrompem a réplica.
+> Pause o dashboard local (LaunchAgent) quando a nuvem virar a instância
+> oficial — dois processos escrevendo/replicando o mesmo banco divergem.
 
 **b) gws_accounts — tarball simples** (o entrypoint baixa
 `seed/gws_accounts.tar.gz` e extrai em `/app`):
 
 ```bash
 cd /Users/genautech/mkt   # pai do repo — o tar precisa conter "gws_accounts/..."
-tar -czf /tmp/gws_accounts.tar.gz gws_accounts
-
-# com aws CLI:
-aws s3 cp /tmp/gws_accounts.tar.gz s3://gws4unik-db/seed/gws_accounts.tar.gz \
-  --endpoint-url https://<ACCOUNT_ID>.r2.cloudflarestorage.com
-# (exporte antes AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY com as chaves do R2)
-
-# ou com rclone (remote "r2" apontando para o endpoint acima):
-rclone copyto /tmp/gws_accounts.tar.gz r2:gws4unik-db/seed/gws_accounts.tar.gz
-
+tar --exclude '.DS_Store' -czf /tmp/gws_accounts.tar.gz gws_accounts
+npx wrangler r2 object put gws4unik-db/seed/gws_accounts.tar.gz \
+  --file /tmp/gws_accounts.tar.gz --remote
 rm /tmp/gws_accounts.tar.gz   # não deixe credenciais em /tmp
 ```
 
 > Atenção: use o `gws_accounts/` que o `engine.py` realmente usa —
-> `/Users/genautech/mkt/gws_accounts` (irmão do repo), que contém os perfis
-> autenticados (`.config/gws/credentials.enc`).
+> `/Users/genautech/mkt/gws_accounts` (irmão do repo). Só perfis com keyring de
+> **arquivo** (`.config/gws/.encryption_key` + `credentials.enc`) funcionam no
+> container; perfis que dependem do Keychain do macOS (ex.: `contato` e a conta
+> default `comercial`) precisam de re-auth com
+> `GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND=file` antes de portar.
 
 ### 5. Deploy
 
@@ -161,8 +153,15 @@ Confira também `npx wrangler tail` para ver os logs do entrypoint
 
 ## Pendências para o deploy real
 
-- `npx wrangler login` na conta paga + Docker rodando.
-- Seed do `dashboard.db` e do `gws_accounts.tar.gz` (passo 4).
+- **Plano Workers Paid (US$ 5/mês) na conta Cloudflare** — Containers não roda
+  no free tier; o `wrangler deploy` falha com `Unauthorized` no push da imagem.
+  Ativar em <https://dash.cloudflare.com/?to=/:account/workers/plans>.
+- `npx wrangler login` + Docker rodando.
+- Seed do `dashboard.db` e do `gws_accounts.tar.gz` (passo 4) — **feito**
+  (objetos em `seed/` no bucket `gws4unik-db`).
+- Perfis Gmail no container: só `genaujunior` tem keyring de arquivo completo;
+  `contato`/`comercial` dependem do Keychain do macOS e precisam de re-auth
+  (ver passo 4b) para enviar e-mail a partir da nuvem.
 - Confirmar se o binário linux do `gws` (`@googleworkspace/cli`) baixa corretamente
   no build; se o npm mudar o nome do pacote, ajustar o `RUN npm install -g` no Dockerfile.
 - IA (`ai.py`) chama o CLI `claude` local — indisponível no container; os fluxos
