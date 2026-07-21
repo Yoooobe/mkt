@@ -1437,8 +1437,10 @@ def campaign_test_send(cid: int, body: TesteCampanhaBody):
     if not camp or not step:
         return JSONResponse({"erro": "campanha ou etapa não encontrada"}, status_code=404)
     sender = db.sender_get(camp["sender_id"] or 1) or db.sender_default()
-    if not sender or not engine.sender_auth_status(sender)["conectado"]:
-        return JSONResponse({"erro": "remetente não conectado"}, status_code=409)
+    st = engine.sender_auth_status(sender) if sender else {"conectado": False, "motivo": "sem remetente"}
+    if not st["conectado"]:
+        return JSONResponse({"erro": f"remetente {sender['email'] if sender else '?'} não conectado "
+                             f"({st['motivo']}) — conecte na aba Remetentes"}, status_code=409)
     tpl = engine.template_get(step["template_ref"])
     contato = {"email": email, "nome": "Genau", "empresa": "4Unik", "telefone": "",
                "cargo": "Gestão", "porte_assinantes": "", "erp": "", "tags": ""}
@@ -1751,6 +1753,17 @@ def sender_status(sid: int):
 @app.post("/api/senders/{sid}/setup")
 def sender_setup(sid: int):
     return engine.preparar_perfil(sid)
+
+
+@app.post("/api/senders/{sid}/connect")
+def sender_connect(sid: int):
+    """Inicia o login OAuth do perfil gws e devolve a URL de autorização para o
+    usuário clicar/copiar. O processo fica aguardando o callback local; ao concluir
+    no navegador, use GET /api/senders/{sid}/status para confirmar."""
+    r = engine.iniciar_login(sid)
+    if not r.get("ok"):
+        return JSONResponse({"erro": r.get("erro", "falha ao iniciar login")}, status_code=502)
+    return r
 
 
 class SenderUpdate(BaseModel):

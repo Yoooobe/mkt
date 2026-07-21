@@ -1032,22 +1032,20 @@ async function vRemetentes() {
 }
 
 function senderCard(s, classesSeguras) {
-  const conectar = s.slug && !s.conectado ? `
+  const conectar = !s.conectado ? `
     <div class="connectbox" id="cb-${s.id}" style="display:none">
-      <b>Conectar ${esc(s.email)}</b> — rode este comando no terminal e logue como essa conta no navegador:
-      <code>! HOME=__HOME__ gws auth login -s gmail</code>
-      <button class="primary" onclick="senderVerificar(${s.id})">Já rodei — Verificar</button>
+      <b>Conectar ${esc(s.email)}</b>
+      <div class="cb-body" style="margin-top:6px"></div>
     </div>` : "";
   const auto = s.auto_reply_on;
   return `<div class="sender-card">
     <div class="top">
       <div class="av">${iniciais(s.email)}</div>
       <div style="flex:1"><span class="em">${esc(s.email)}</span> ${spill(s)}
-        <div class="pp">${esc(s.nome)} · ${esc(s.proposito)}</div></div>
-      ${s.slug ? (s.conectado
+        <div class="pp">${esc(s.nome)} · ${esc(s.proposito)}${s.slug ? "" : " · conta principal"}</div></div>
+      ${s.conectado
         ? `<button onclick="location.hash='#/remetente/${s.id}'">Ver detalhes →</button>`
-        : `<button class="primary" onclick="senderConectar(${s.id})">🔌 Conectar conta</button>`)
-        : '<span class="muted">conta principal</span>'}
+        : `<button class="primary" onclick="senderConectar(${s.id})">🔌 Conectar conta</button>`}
     </div>
     ${conectar}
     <div class="sender-mini">
@@ -1084,11 +1082,31 @@ function wireSenders() {
   });
 }
 async function senderConectar(id) {
+  const cb = document.getElementById("cb-" + id);
+  const body = cb ? cb.querySelector(".cb-body") : null;
+  if (cb) {
+    cb.style.display = "block";
+    body.innerHTML = '<span class="muted">⏳ gerando o link de autorização do Google…</span>';
+    cb.scrollIntoView({behavior: "smooth", block: "center"});
+  }
   try {
-    const r = await api(`/api/senders/${id}/setup`, {method: "POST"});
-    const cb = document.getElementById("cb-" + id);
-    if (cb) { cb.style.display = "block"; cb.querySelector("code").textContent = "! " + r.comando; cb.scrollIntoView({behavior: "smooth"}); }
+    const r = await api(`/api/senders/${id}/connect`, {method: "POST"});
+    if (!body) return;
+    body.innerHTML = `
+      <p class="muted" style="margin:0 0 8px">${esc(r.nota || "Abra o link e autorize como a conta do remetente.")}</p>
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="primary cb-open">🔗 Abrir link de conexão</button>
+        <button class="cb-copy">📋 Copiar link</button>
+        <button class="green" onclick="senderVerificar(${id})">✅ Já autorizei — Verificar</button>
+      </div>
+      <p style="margin:8px 0 0"><small class="muted">O link precisa ser aberto <b>neste computador</b> (o retorno da autorização volta para o dashboard local). Se expirar, clique em Conectar conta de novo.</small></p>`;
+    body.querySelector(".cb-open").onclick = () => window.open(r.url, "_blank", "noopener");
+    body.querySelector(".cb-copy").onclick = async () => {
+      try { await navigator.clipboard.writeText(r.url); toast("Link de conexão copiado ✔", 3000); }
+      catch (e) { prompt("Copie o link de conexão:", r.url); }
+    };
   } catch (e) {
+    if (body) body.innerHTML = `<p class="form-feedback error">Não foi possível gerar o link: ${esc(e.message)}</p>`;
     toast(`Não foi possível preparar a conexão: ${e.message}`, 6000);
   }
 }

@@ -11,11 +11,14 @@ Princípios (mesmos do proposal_monitor.py): a IA sugere, o CÓDIGO decide.
 """
 import base64
 import json
+import os
 import random
 import re
 import socket
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timedelta
 from email.utils import parseaddr
 from email.mime.multipart import MIMEMultipart
@@ -201,26 +204,91 @@ def preparar_perfil(sid):
                           f"— logue no navegador como {s['email']} e depois clique em Verificar.")}
 
 
-def sender_auth_status(sender):
-    """🟢/🔴 — verifica se o perfil gws do remetente está autenticado."""
-    home = gws_home(sender)
-    if home is None:
-        return {"conectado": True, "motivo": "conta default"}  # frank = HOME real, já logado
-    import os
-    if not (ACCOUNTS_DIR / (sender.get("slug") or "") / ".config" / "gws" / "credentials.enc").exists():
-        return {"conectado": False, "motivo": "perfil ainda não criado/logado"}
-    env = os.environ.copy()
-    env["HOME"] = home
-    env["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
-    out = subprocess.run(["gws", "auth", "status"], capture_output=True, text=True, timeout=30, env=env)
-    m = re.search(r"\{.*\}", out.stdout, re.S)
-    if not m:
-        return {"conectado": False, "motivo": "sem credenciais"}
+def _gws_auth_info(home):
+    """JSON do `gws auth status` do perfil (HOME real quando home=None). {} em erro."""
+    env = None
+    if home:
+        env = os.environ.copy()
+        env["HOME"] = home
+        env["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
     try:
-        d = json.loads(m.group(0))
-        return {"conectado": bool(d.get("has_refresh_token")), "motivo": "ok" if d.get("has_refresh_token") else "precisa login"}
+        out = subprocess.run(["gws", "auth", "status"], capture_output=True, text=True,
+                             timeout=30, env=env)
+        m = re.search(r"\{.*\}", out.stdout, re.S)
+        return json.loads(m.group(0)) if m else {}
     except Exception:
-        return {"conectado": False, "motivo": "erro ao ler status"}
+        return {}
+
+
+def sender_auth_status(sender):
+    """🟢/🔴 — autenticação REAL do perfil gws do remetente.
+
+    Sem atalhos: até a conta default (HOME real) é verificada de verdade — precisa
+    ter refresh token E estar logada EXATAMENTE no e-mail do remetente. Antes o
+    default retornava 'conectado' hardcoded e o envio saía por qualquer conta que
+    estivesse logada na máquina (ex.: pessoal), com o Gmail reescrevendo o From."""
+    home = gws_home(sender)
+    if home is not None and not (Path(home) / ".config" / "gws" / "credentials.enc").exists():
+        return {"conectado": False, "motivo": "perfil ainda não criado/logado", "conta_real": ""}
+    d = _gws_auth_info(home)
+    conta_real = (d.get("user") or "").strip().lower()
+    esperado = (sender.get("email") or "").strip().lower()
+    if not d.get("has_refresh_token"):
+        return {"conectado": False, "motivo": "precisa login", "conta_real": conta_real}
+    if conta_real and conta_real != esperado:
+        return {"conectado": False, "conta_real": conta_real,
+                "motivo": f"logado como {conta_real} — conecte a conta certa"}
+    return {"conectado": True, "motivo": "ok", "conta_real": conta_real}
+
+
+# ---------------- login OAuth pelo dashboard (link clicável/copiável) ----------------
+# `gws auth login` abre um servidor local aguardando o callback OAuth. Rodamos o
+# processo em background com BROWSER neutro (não abre navegador no servidor),
+# capturamos a URL do stdout e devolvemos para a UI — o usuário clica/copia,
+# autoriza como a conta do remetente e o processo grava as credenciais no perfil.
+
+_LOGIN_PROCS = {}
+
+
+def iniciar_login(sid):
+    """Inicia o login OAuth do perfil do remetente e devolve a URL de autorização."""
+    s = db.sender_get(sid)
+    if not s:
+        return {"ok": False, "erro": "remetente não encontrado"}
+    home = gws_home(s)
+    if home:
+        preparar_perfil(sid)               # garante diretório + client_secret.json
+    antigo = _LOGIN_PROCS.get(sid)
+    if antigo and antigo["proc"].poll() is None:
+        antigo["proc"].kill()
+    env = os.environ.copy()
+    if home:
+        env["HOME"] = home
+        env["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
+    env["BROWSER"] = "/usr/bin/true"       # a URL é para o usuário, não para o servidor
+    proc = subprocess.Popen(["gws", "auth", "login", "-s", "gmail"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, env=env)
+    info = {"proc": proc, "url": "", "linhas": []}
+    _LOGIN_PROCS[sid] = info
+
+    def _ler():
+        for linha in proc.stdout:
+            info["linhas"].append(linha.rstrip())
+            m = re.search(r"https://accounts\.google\.com/\S+", linha)
+            if m and not info["url"]:
+                info["url"] = m.group(0)
+    threading.Thread(target=_ler, daemon=True).start()
+    for _ in range(40):                    # espera a URL aparecer (até ~10s)
+        if info["url"] or proc.poll() is not None:
+            break
+        time.sleep(0.25)
+    if not info["url"]:
+        detalhe = "\n".join(info["linhas"])[-400:] or "o gws não devolveu a URL de login"
+        return {"ok": False, "erro": detalhe}
+    return {"ok": True, "url": info["url"], "email": s["email"],
+            "nota": (f"Abra o link NESTA máquina e autorize como {s['email']}. "
+                     "Depois clique em Verificar.")}
 
 
 # ---------------- templates: builtin (email_templates.py) + IA (SQLite) ----------------
