@@ -205,27 +205,39 @@ def ensure_runtime_loops():
     engine.log("loops de runtime iniciados")
 
 
+def _startup_catchup():
+    """Trabalho pesado DEPOIS que a porta já está ouvindo.
+
+    No remoto, strategy.run + Calendly/Gmail + backfills de 60k contacts
+    atrasavam o primeiro response em dezenas de segundos após o restore R2.
+    """
+    try:
+        strategy.run("startup", perform_sync=True)
+        db.backfill_respondeu_tags()
+        engine.backfill_threads()
+        try:
+            engine.scan_calendly()
+        except Exception as e:
+            engine.log(f"scan_calendly no startup falhou: {e}")
+        if engine.has_active_campaigns() or engine.has_recent_sends(days=14):
+            ensure_runtime_loops()
+        engine.log("startup catch-up concluído")
+    except Exception as e:
+        engine.log(f"startup catch-up falhou: {e}")
+
+
 @app.on_event("startup")
 def startup():
+    # Só o mínimo para a API responder — catch-up pesado vai em background.
     db.init()
     interrompidos = db.quarantine_interrupted_queue()
     if interrompidos:
         engine.log(f"startup: {interrompidos} envio(s) interrompido(s) isolado(s); reenvio automático bloqueado")
-    strategy.run("startup", perform_sync=True)
     seed.seed_senders()
     seed.seed_campanha_reativacao()
     seed.seed_tags()
     db.migrar_tags_agendamento()  # 'agendou' antigo (intenção) → 'pediu_agendamento'
-    db.backfill_respondeu_tags()  # mantém a tag 'respondeu' em sincronia com a coluna
-    engine.backfill_threads()  # garante contacts.thread para detecção de respostas
-    try:
-        engine.scan_calendly()  # marca 'agendou' real a partir das notificações do Calendly
-    except Exception as e:
-        engine.log(f"scan_calendly no startup falhou: {e}")
-    # Recuperação pós-restart: só liga os loops se houver trabalho pendente
-    # (campanha ativa, ou envios recentes que ainda merecem varredura de respostas).
-    if engine.has_active_campaigns() or engine.has_recent_sends(days=14):
-        ensure_runtime_loops()
+    threading.Thread(target=_startup_catchup, daemon=True).start()
 
 
 # ---------------- contatos / CRM ----------------
@@ -1184,9 +1196,48 @@ def campaigns(q: str = "", status: str = "", tipo: str = "",
         sql += " WHERE " + " AND ".join(where)
     sql += f" ORDER BY {ordem}"
     c = db.conn()
-    out = [_campaign_payload(c, r) for r in c.execute(sql, params).fetchall()]
+    out = []
+    for r in c.execute(sql, params).fetchall():
+        p = _campaign_payload(c, r)
+        if p.get("build"):
+            # a lista só precisa do resumo do build (log/plano ficam no detalhe)
+            p["build"] = {k: p["build"].get(k) for k in
+                          ("status", "etapa", "feitos", "total", "percent", "eta_s", "eta_estimada")}
+        out.append(p)
     c.close()
     return {"total": len(out), "campanhas": out}
+
+
+# ---------------- loop de sugestão de campanhas (portfólio IA) ----------------
+# Registrado ANTES de /api/campaigns/{cid} para "suggest" não ser interpretado
+# como um id de campanha.
+
+class SugestaoBody(BaseModel):
+    max_campanhas: int = 4
+    auto_gerar: bool = False            # True: gera os rascunhos logo após sugerir
+    sender_id: int = 1
+
+
+@app.post("/api/campaigns/suggest")
+def campaigns_suggest(b: SugestaoBody):
+    """Dispara o loop estrategista GTM + crítica do copywriter em background.
+    Tudo termina em rascunho; nada é ativado ou enviado automaticamente."""
+    return ai.iniciar_sugestao(b.max_campanhas, b.auto_gerar, b.sender_id)
+
+
+@app.get("/api/campaigns/suggest")
+def campaigns_suggest_status():
+    return ai.suggest_status() or {"status": "vazio",
+                                   "nota": "nenhum portfólio sugerido ainda"}
+
+
+@app.post("/api/campaigns/suggest/generate")
+def campaigns_suggest_generate(b: SugestaoBody):
+    """Gera os rascunhos do portfólio já sugerido (sequencial, em background)."""
+    try:
+        return ai.iniciar_geracao_portfolio(b.sender_id)
+    except RuntimeError as ex:
+        return JSONResponse({"erro": str(ex)}, status_code=400)
 
 
 @app.get("/api/campaigns/{cid}")
@@ -2241,6 +2292,25 @@ def campaign_ads_briefing_create(cid: int):
         return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
     try:
         return {"id": cid, "briefing": ai.gerar_briefing_ads(camp, steps)}
+    except Exception as e:
+        code = 429 if ai._erro_eh_cota(str(e)) else 502
+        return JSONResponse({"erro": str(e)}, status_code=code)
+
+
+@app.get("/api/campaigns/{cid}/briefing")
+def campaign_briefing(cid: int):
+    """Briefing de lançamento (os porquês) já gerado — recomendação go/no-go."""
+    b = ai.briefing_lancamento(cid)
+    return {"id": cid, "briefing": b}
+
+
+@app.post("/api/campaigns/{cid}/briefing")
+def campaign_briefing_create(cid: int):
+    """(Re)gera o briefing de lançamento com IA. Nada é ativado — só recomendação."""
+    try:
+        return {"id": cid, "briefing": ai.gerar_briefing_lancamento(cid)}
+    except ValueError as e:
+        return JSONResponse({"erro": str(e)}, status_code=404)
     except Exception as e:
         code = 429 if ai._erro_eh_cota(str(e)) else 502
         return JSONResponse({"erro": str(e)}, status_code=code)

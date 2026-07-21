@@ -4,6 +4,10 @@
   "name": "gws4unik-dashboard",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-15",
+  // Deixar "" no dia a dia. Só "1" no rebootstrap pontual (seed + wipe da réplica).
+  "vars": {
+    "FORCE_SEED_DB": ""
+  },
   "containers": [
     {
       "class_name": "DashboardContainer",
@@ -14,7 +18,9 @@
       // SQLite = 1 escritor. NUNCA aumente: duas instâncias replicando o mesmo
       // caminho no R2 corrompem a réplica do Litestream.
       "max_instances": 1,
-      "instance_type": "basic"
+      // basic (¼ vCPU / 1 GiB) engasga com ~60k contacts + Python. standard-1
+      // = ½ vCPU / 4 GiB / 8 GB disco — mínimo viável para o CRM remoto.
+      "instance_type": "standard-1"
     }
   ],
   "durable_objects": {

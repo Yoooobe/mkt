@@ -204,9 +204,20 @@ CREATE TABLE IF NOT EXISTS ga4_cache (
 
 
 def conn():
+    """Conexão SQLite afinada para Litestream + disco efêmero do container.
+
+    WAL é obrigatório para o Litestream. synchronous=NORMAL evita fsync FULL
+    (caro no container) mantendo durabilidade suficiente porque a réplica R2
+    cobre o resto. cache/mmap/temp_store aceleram leituras sobre ~60k contacts.
+    """
     c = sqlite3.connect(DB_PATH, timeout=30)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
+    c.execute("PRAGMA synchronous=NORMAL")
+    c.execute("PRAGMA busy_timeout=30000")
+    c.execute("PRAGMA temp_store=MEMORY")
+    c.execute("PRAGMA cache_size=-65536")   # 64 MiB
+    c.execute("PRAGMA mmap_size=268435456")  # 256 MiB (ignorado se o SO limitar)
     return c
 
 

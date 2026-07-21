@@ -172,16 +172,31 @@ def run(reason="periodic", perform_sync=False):
 
 
 def status():
+    """Leitura barata do snapshot. Nunca reexecuta o ciclo no page load remoto.
+
+    Rodar strategy.run() aqui bloqueava a home por dezenas de segundos (GA4 +
+    resumo de ~60k contacts). O ciclo só roda no startup em background, no
+    POST /api/strategy/run ou nos loops periódicos.
+    """
     raw = db.meta_get("strategy_loop", "")
+    if not raw:
+        return {"atualizado_em": "", "motivo": "ainda não gerado",
+                "guardrail": "Clique em Atualizar estratégia para gerar o primeiro snapshot."}
     try:
-        return json.loads(raw) if raw else run("on-demand", perform_sync=False)
+        return json.loads(raw)
     except Exception:
-        return run("recovery", perform_sync=False)
+        return {"atualizado_em": "", "motivo": "snapshot inválido",
+                "erro": "meta strategy_loop corrompida — rode POST /api/strategy/run"}
 
 
 def seo_geo_status():
+    """Leitura barata do snapshot SEO/GEO — mesmo guardrail de status()."""
     raw = db.meta_get("seo_geo_loop", "")
+    if not raw:
+        return {"ativo": False, "motivo": "ainda não gerado",
+                "guardrail": "Rode o ciclo de estratégia para gerar a pauta SEO/GEO."}
     try:
-        return json.loads(raw) if raw else seo_geo_run()
+        return json.loads(raw)
     except Exception:
-        return seo_geo_run()
+        return {"ativo": False, "motivo": "snapshot inválido",
+                "erro": "meta seo_geo_loop corrompida — rode POST /api/seo-geo/run"}

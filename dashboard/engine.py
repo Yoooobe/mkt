@@ -520,12 +520,15 @@ def _h_track_sync(payload):
     from urllib.parse import urlencode
     cursor = db.meta_get("tracking_cursor", "")
     query = urlencode({"cursor": cursor, "limit": 500})
-    out = subprocess.run(["curl", "-s", "--max-time", "30",
+    # /usr/bin/curl: LaunchAgent/uvicorn às vezes sobe com PATH mínimo e o
+    # binário "curl" some do path → returncode≠0 com stderr vazio.
+    out = subprocess.run(["/usr/bin/curl", "-sS", "--max-time", "30",
                           "-H", f"X-Sync-Key: {TRACK_SYNC_KEY}",
                           f"{TRACK_BASE}/events?{query}"],
                          capture_output=True, text=True, timeout=40)
     if out.returncode:
-        raise RuntimeError(f"falha ao consultar API de rastreio: {out.stderr[:160]}")
+        detail = (out.stderr or out.stdout or f"curl exit {out.returncode}")[:160]
+        raise RuntimeError(f"falha ao consultar API de rastreio: {detail}")
     try:
         data = json.loads(out.stdout)
     except Exception:

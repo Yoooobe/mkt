@@ -101,6 +101,14 @@ rm /tmp/dashboard-seed.db
 > Pause o dashboard local (LaunchAgent) quando a nuvem virar a instância
 > oficial — dois processos escrevendo/replicando o mesmo banco divergem.
 
+### Performance remota (já aplicado no código)
+
+- `instance_type: standard-1` (½ vCPU / 4 GiB) em vez de `basic`
+- `sleepAfter = "6h"` — evita restore do R2 a cada visita após 10 min de idle
+- SQLite com `synchronous=NORMAL`, cache 64 MiB, mmap 256 MiB
+- Startup pesado (strategy/Calendly/backfills) em background depois da porta abrir
+- Entrypoint restaura DB + gws_accounts em paralelo; sem probe HEAD no bucket
+
 **b) gws_accounts — tarball simples** (o entrypoint baixa
 `seed/gws_accounts.tar.gz` e extrai em `/app`):
 

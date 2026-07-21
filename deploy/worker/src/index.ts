@@ -12,13 +12,16 @@ interface Env {
   R2_ACCESS_KEY_ID: string;
   R2_SECRET_ACCESS_KEY: string;
   R2_ENDPOINT: string;
+  // Plain var (wrangler.jsonc vars) — "1" força seed no boot (rebootstrap).
+  FORCE_SEED_DB?: string;
 }
 
 export class DashboardContainer extends Container<Env> {
   defaultPort = 8000;
-  // Alto de propósito: o dashboard tem fila/threads internas e o boot faz
-  // restore do R2 — evitar cold starts frequentes.
-  sleepAfter = "10m";
+  // Cold start = restore Litestream do R2 (~20–40s). Com 10m o container
+  // dormia entre sessões e cada visita pagava o restore de novo. 6h mantém
+  // a instância quente no uso normal e ainda escala a zero depois do expediente.
+  sleepAfter = "6h";
   envVars = {
     API_KEY: this.env.API_KEY,
     TRACKING_BASE_URL: this.env.TRACKING_BASE_URL,
@@ -27,6 +30,7 @@ export class DashboardContainer extends Container<Env> {
     R2_ACCESS_KEY_ID: this.env.R2_ACCESS_KEY_ID,
     R2_SECRET_ACCESS_KEY: this.env.R2_SECRET_ACCESS_KEY,
     R2_ENDPOINT: this.env.R2_ENDPOINT,
+    FORCE_SEED_DB: this.env.FORCE_SEED_DB ?? "",
   };
 }
 

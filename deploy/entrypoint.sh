@@ -29,10 +29,45 @@ if [ ! -f "$ENV_FILE" ]; then
   done
 fi
 
-# --- 2. gws_accounts (perfis Gmail por remetente) do R2 ----------------------
-# Seed opcional: tarball em s3://<bucket>/seed/gws_accounts.tar.gz (ver deploy/README.md).
-# Sem ele o dashboard sobe normalmente, apenas sem conseguir enviar e-mails.
-if [ ! -d /app/gws_accounts/contato ] && [ -n "${R2_ENDPOINT:-}" ]; then
+# --- 2+3. gws_accounts e SQLite em PARALELO (ambos são downloads do R2) -----
+# Antes era serial: tar → restore → probe → uvicorn. No cold start isso somava
+# dezenas de segundos antes da porta abrir.
+restore_db() {
+  if [ -f "$DB_PATH" ]; then
+    return 0
+  fi
+  # FORCE_SEED_DB=1: ignora réplica Litestream e aplica seed/dashboard.db
+  # (usar após upload de seed novo + wipe da réplica, ou para rebootstrap).
+  if [ "${FORCE_SEED_DB:-}" = "1" ] && [ -n "${R2_ENDPOINT:-}" ]; then
+    echo "[entrypoint] FORCE_SEED_DB=1 — baixando seed/dashboard.db"
+    if curl -fsS --aws-sigv4 "aws:amz:auto:s3" \
+         --user "${R2_ACCESS_KEY_ID}:${R2_SECRET_ACCESS_KEY}" \
+         "${R2_ENDPOINT}/${BUCKET}/seed/dashboard.db" -o "$DB_PATH"; then
+      echo "[entrypoint] seed/dashboard.db aplicado (force)"
+      return 0
+    fi
+    echo "[entrypoint] FORCE_SEED_DB falhou — tentando restore normal"
+    rm -f "$DB_PATH"
+  fi
+  echo "[entrypoint] restaurando dashboard.db do R2..."
+  litestream restore -if-replica-exists -config /etc/litestream.yml "$DB_PATH" \
+    || echo "[entrypoint] litestream restore falhou — tentando seed cru"
+  if [ -f "$DB_PATH" ]; then
+    echo "[entrypoint] restore concluído"
+  elif [ -n "${R2_ENDPOINT:-}" ] && curl -fsS --aws-sigv4 "aws:amz:auto:s3" \
+         --user "${R2_ACCESS_KEY_ID}:${R2_SECRET_ACCESS_KEY}" \
+         "${R2_ENDPOINT}/${BUCKET}/seed/dashboard.db" -o "$DB_PATH"; then
+    echo "[entrypoint] seed/dashboard.db aplicado (bootstrap inicial)"
+  else
+    rm -f "$DB_PATH"
+    echo "[entrypoint] réplica e seed inexistentes — banco novo será criado pelo app (db.init)"
+  fi
+}
+
+restore_gws() {
+  if [ -d /app/gws_accounts/contato ] || [ -z "${R2_ENDPOINT:-}" ]; then
+    return 0
+  fi
   if curl -fsS --aws-sigv4 "aws:amz:auto:s3" \
        --user "${R2_ACCESS_KEY_ID}:${R2_SECRET_ACCESS_KEY}" \
        "${R2_ENDPOINT}/${BUCKET}/seed/gws_accounts.tar.gz" \
@@ -43,41 +78,26 @@ if [ ! -d /app/gws_accounts/contato ] && [ -n "${R2_ENDPOINT:-}" ]; then
   else
     echo "[entrypoint] AVISO: seed/gws_accounts.tar.gz indisponível no R2 — envio de e-mail ficará inativo"
   fi
-fi
+}
 
-# --- 3. restore do SQLite via Litestream --------------------------------------
-if [ ! -f "$DB_PATH" ]; then
-  echo "[entrypoint] restaurando dashboard.db do R2..."
-  # Não pode derrubar o boot (set -e): sem réplica/creds o fallback abaixo decide.
-  litestream restore -if-replica-exists -config /etc/litestream.yml "$DB_PATH" \
-    || echo "[entrypoint] litestream restore falhou — tentando seed cru"
-  if [ -f "$DB_PATH" ]; then
-    echo "[entrypoint] restore concluído"
-  elif [ -n "${R2_ENDPOINT:-}" ] && curl -fsS --aws-sigv4 "aws:amz:auto:s3" \
-         --user "${R2_ACCESS_KEY_ID}:${R2_SECRET_ACCESS_KEY}" \
-         "${R2_ENDPOINT}/${BUCKET}/seed/dashboard.db" -o "$DB_PATH"; then
-    # Bootstrap: snapshot cru enviado uma única vez (wrangler r2 object put).
-    # A partir daqui o litestream replicate assume e mantém a réplica oficial.
-    echo "[entrypoint] seed/dashboard.db aplicado (bootstrap inicial)"
-  else
-    rm -f "$DB_PATH"
-    echo "[entrypoint] réplica e seed inexistentes — banco novo será criado pelo app (db.init)"
-  fi
-fi
+restore_db &
+pid_db=$!
+restore_gws &
+pid_gws=$!
+wait "$pid_db"
+wait "$pid_gws"
 
 # --- 4. replicação contínua em volta do uvicorn -------------------------------
 cd "$APP_ROOT/dashboard"
 
-# Sanity check das credenciais R2 (HEAD no bucket). Se falharem, subir o app
-# MESMO ASSIM (sem replicação) para o dashboard ficar acessível e diagnosticável
-# — melhor que crash-loop silencioso. O log grita o motivo.
-if curl -fsS --aws-sigv4 "aws:amz:auto:s3" \
-     --user "${R2_ACCESS_KEY_ID:-x}:${R2_SECRET_ACCESS_KEY:-x}" \
-     "${R2_ENDPOINT:-http://invalid}/${BUCKET}?list-type=2&max-keys=1" -o /dev/null; then
-  echo "[entrypoint] credenciais R2 OK — replicação Litestream ativa"
+# Se as três vars R2 estão presentes, sobe com Litestream direto — o probe HEAD
+# no bucket adicionava um round-trip em todo boot e o Litestream já falha
+# sozinho (e loga) se as credenciais estiverem erradas.
+if [ -n "${R2_ENDPOINT:-}" ] && [ -n "${R2_ACCESS_KEY_ID:-}" ] && [ -n "${R2_SECRET_ACCESS_KEY:-}" ]; then
+  echo "[entrypoint] R2 configurado — replicação Litestream ativa"
   exec litestream replicate -config /etc/litestream.yml \
     -exec "python -m uvicorn app:app --host 0.0.0.0 --port 8000"
 else
-  echo "[entrypoint] ERRO: credenciais/endpoint R2 inválidos — subindo SEM replicação (dados deste boot não persistem!)"
+  echo "[entrypoint] AVISO: credenciais R2 ausentes — subindo SEM replicação (dados deste boot não persistem!)"
   exec python -m uvicorn app:app --host 0.0.0.0 --port 8000
 fi

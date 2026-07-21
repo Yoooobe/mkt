@@ -77,7 +77,8 @@ function humaniza(dtStr) {
 
 let inicioTimer = null;
 async function vInicio() {
-  try { await api("/api/tracking/sync", {method: "POST"}); } catch (e) { /* offline: segue com o que tem */ }
+  // Tracking sync fora do caminho crítico — não bloqueia a home no remoto.
+  api("/api/tracking/sync", {method: "POST"}).catch(() => {});
   const [d, estrategia, seoGeo] = await Promise.all([
     api("/api/metrics/overview"),
     api("/api/strategy/status").catch(() => null),
@@ -244,7 +245,9 @@ async function vCampanhas() {
   view.innerHTML = `
     <div class="toolbar"><h2 style="margin:0">Campanhas</h2><span class="sp"></span>
       <button class="warn" onclick="campLimparTodas()">🧹 Limpar campanhas</button>
+      <button onclick="sugerirCampanhas()">💡 Sugerir campanhas (IA)</button>
       <button class="primary" onclick="dlgCampanha()">✨ Nova campanha com IA</button></div>
+    <div id="sug-card"></div>
     <div class="toolbar">
       <input id="camp-q" type="search" placeholder="🔍 Buscar por nome ou objetivo…"
         value="${esc(campFiltro.q)}" style="min-width:220px" oninput="campBuscar(this)">
@@ -264,10 +267,15 @@ async function vCampanhas() {
     ${d.campanhas.map(c => {
       const ativos = c.contatos_por_status.ativo || 0, pend = c.contatos_por_status.pendente || 0,
             pausa = c.contatos_por_status.pausado_resposta || 0, done = c.contatos_por_status.concluido || 0;
+      const b = c.build || {};
+      const miniBuild = b.status === "gerando"
+        ? badge(`🧠 gerando ${b.feitos || 0}/${b.total || "?"}` +
+                (b.eta_s != null ? ` · ${etaLabel(b.eta_s)}` : ""), "pendente")
+        : b.status === "erro" ? badge("⚠️ geração falhou", "encerrada") : "";
       return `<div class="card click" onclick="location.hash='#/campanha/${c.id}'">
         <div class="toolbar" style="margin-bottom:6px">
           <h3 style="margin:0">${esc(c.nome)}</h3>
-          ${badge(c.status)} ${badge(c.tipo, "pendente")}
+          ${badge(c.status)} ${badge(c.tipo, "pendente")} ${miniBuild}
           ${c.cad_min_dias != null ? `<span class="muted">cadência aleatória ${c.cad_min_dias}–${c.cad_max_dias} dias</span>` : ""}
           <span class="sp"></span><span class="muted">${c.steps.length} email(s) · ${c.total_contatos} contato(s) · ${c.enviados} enviado(s)</span>
         </div>
@@ -278,6 +286,65 @@ async function vCampanhas() {
           ${pausa ? badge(pausa + " responderam (pausados)", "pausado_resposta") + " " : ""}
           ${done ? badge(done + " concluídos", "concluido") : ""}</div>
       </div>`; }).join("") || '<div class="card muted">Nenhuma campanha ainda.</div>'}`;
+  renderSugestoes();
+}
+
+/* ---------- loop de sugestão de campanhas (portfólio IA) ---------- */
+let sugTimer = null;
+
+async function sugerirCampanhas() {
+  const max = prompt("Quantas campanhas a IA deve sugerir? (1–8)", "4");
+  if (max === null) return;
+  try {
+    const r = await api("/api/campaigns/suggest", {json: {max_campanhas: parseInt(max) || 4}});
+    toast(r.nota || "Sugestão iniciada — o estrategista GTM e o copywriter estão trabalhando…", 5000);
+    renderSugestoes();
+  } catch (e) { toast("Erro ao iniciar sugestão: " + e.message, 6000); }
+}
+
+async function gerarPortfolio() {
+  if (!confirm("Gerar TODAS as sugestões aprovadas como campanhas em RASCUNHO?\n\n" +
+    "A IA escreve os emails de cada campanha em sequência. Nada é ativado ou enviado sem você aprovar.")) return;
+  try {
+    const r = await api("/api/campaigns/suggest/generate", {json: {}});
+    toast(r.nota || "Geração dos rascunhos iniciada.", 5000);
+    renderSugestoes();
+  } catch (e) { toast("Erro ao gerar rascunhos: " + e.message, 6000); }
+}
+
+async function renderSugestoes() {
+  const el = document.getElementById("sug-card");
+  if (!el) { clearTimeout(sugTimer); return; }
+  let s = null;
+  try { s = await api("/api/campaigns/suggest"); } catch (e) { /* servidor ocupado */ }
+  clearTimeout(sugTimer);
+  if (!s || s.status === "vazio") { el.innerHTML = ""; return; }
+  const gerando = s.status === "gerando" || s.status === "gerando_rascunhos";
+  const criadas = s.criadas || [];
+  const cidPor = Object.fromEntries(criadas.map(c => [c.nome, c.cid]));
+  el.innerHTML = `<div class="card" style="border-left:4px solid #8b5cf6">
+    <div class="toolbar" style="margin-bottom:6px">
+      <h3 style="margin:0">💡 Portfólio sugerido pela IA</h3>
+      ${badge(s.status, s.status === "erro" ? "encerrada" : gerando ? "pendente" : "ativo")}
+      <span class="sp"></span>
+      ${!gerando && (s.campanhas || []).length ? `<button class="primary" onclick="gerarPortfolio()">🚀 Gerar rascunhos</button>` : ""}
+    </div>
+    ${gerando ? `<div class="muted">⏳ ${esc(s.etapa || "trabalhando…")}${s.eta_s != null ? ` · faltam ${etaLabel(s.eta_s)}` : ""}</div>` : ""}
+    ${s.status === "erro" ? `<div class="muted">⚠️ ${esc(s.erro || "erro na sugestão")}</div>` : ""}
+    ${(s.campanhas || []).map(c => `<div style="margin-top:10px;padding:10px;background:#f6f8f9;border-radius:8px">
+      <div class="toolbar" style="margin-bottom:4px"><b>${esc(c.nome)}</b>
+        ${badge((c.segmentos || []).join(", ") || "—", "pendente")}
+        ${c.aprovado === false ? badge("reprovada pelo copywriter", "encerrada") : ""}
+        ${cidPor[c.nome] ? `<a href="#/campanha/${cidPor[c.nome]}">📝 rascunho #${cidPor[c.nome]}</a>` : ""}
+        <span class="sp"></span><span class="muted">${c.n_emails || 3} email(s) · GA4: ${esc(c.evento_ga4 || "—")}</span></div>
+      <div class="muted"><b>ICP:</b> ${esc(c.icp || "—")} · <b>Gancho:</b> ${esc(c.gancho || "—")}</div>
+      <div class="muted"><b>Objetivo:</b> ${esc(c.objetivo || "—")}</div>
+      ${c.prova ? `<div class="muted"><b>Prova:</b> ${esc(c.prova)}</div>` : ""}
+      ${c.critica ? `<div class="muted">✍️ <i>${esc(c.critica)}</i></div>` : ""}
+    </div>`).join("")}
+    <div style="margin-top:8px"><small class="muted">Guardrail: tudo nasce em rascunho com emails pendentes — nada é ativado ou enviado sem sua aprovação. Atualizado: ${esc(s.atualizado_em || "—")}</small></div>
+  </div>`;
+  if (gerando) sugTimer = setTimeout(renderSugestoes, 5000);
 }
 
 async function ncUpdateCount() {
@@ -405,16 +472,46 @@ document.getElementById("nc-criar").onclick = async () => {
 };
 
 /* ---------- TELA: Campanha (detalhe) ---------- */
+const etaLabel = s => s == null ? "" : s >= 90 ? `~${Math.round(s / 60)} min` : `~${Math.max(10, Math.round(s / 10) * 10)}s`;
+let logRaciocinioAberto = false;   // preserva o estado do <details> entre re-renders do polling
+
+function renderBuildPanel(b) {
+  const total = b.total || 0, feitos = b.feitos || 0, pct = b.percent || 0;
+  const eta = b.eta_s != null
+    ? `⏱ faltam ${etaLabel(b.eta_s)}${b.eta_estimada ? " <small class='muted'>(estimativa — afina após o 1º e-mail)</small>" : ""}` : "";
+  const plano = b.plano_emails || [];
+  const log = b.log || [];
+  return `<div class="card" style="border-left:4px solid #45bbd8;background:#f2fbfd">
+    <div class="toolbar" style="margin-bottom:8px">
+      <div class="spinner" style="width:18px;height:18px;display:inline-block;vertical-align:middle"></div>
+      <b style="margin-left:4px">🧠 Gerando os e-mails…</b>
+      <span class="muted">${feitos}/${total || "?"} prontos — ${esc(b.etapa || "")}</span>
+      <span class="sp"></span><b>${eta}</b></div>
+    <div style="background:#d7ebf2;border-radius:6px;height:10px;overflow:hidden">
+      <div style="width:${pct}%;height:100%;background:#45bbd8;transition:width .6s"></div></div>
+    ${plano.length ? `<div style="margin-top:10px">${plano.map((e, i) => {
+      const ord = i + 1;
+      const ico = ord <= feitos ? "✅" : (ord === feitos + 1 ? "✍️" : "⏳");
+      return `<div style="margin-top:4px">${ico} <b>E${ord} ${esc(e.nome || "")}</b>
+        <small class="muted">— ${esc(e.angulo || "")}</small></div>`;
+    }).join("")}</div>` : ""}
+    ${log.length ? `<details style="margin-top:10px" ${logRaciocinioAberto ? "open" : ""}
+        ontoggle="logRaciocinioAberto=this.open">
+      <summary style="cursor:pointer"><b>🧩 Raciocínio da IA</b> <small class="muted">(${log.length} passos — o que está sendo considerado)</small></summary>
+      <div style="max-height:240px;overflow:auto;margin-top:6px;padding:8px;background:#fff;border-radius:8px">
+        ${log.slice().reverse().map(l => `<div style="margin-bottom:4px">
+          <small class="muted">${esc((l.ts || "").slice(11, 16))}</small> ${esc(l.msg || "")}</div>`).join("")}
+      </div></details>` : ""}
+    <div style="margin-top:8px"><small class="muted">Pode deixar a aba aberta; a tela atualiza sozinha. Ao final a IA escreve o briefing de lançamento para você decidir se ativa.</small></div>
+  </div>`;
+}
+
 async function vCampanha(id) {
   const c = await api("/api/campaigns/" + id);
   const gerando = c.build && c.build.status === "gerando";
   const erroBuild = c.build && c.build.status === "erro";
   const podeAtivar = !gerando && c.steps.length > 0 && c.steps.every(s => s.status_template === "aprovado");
-  const banner = gerando ? `<div class="card" style="border-left:4px solid #45bbd8;background:#f2fbfd">
-      <div class="spinner" style="width:18px;height:18px;display:inline-block;vertical-align:middle"></div>
-      <b style="margin-left:8px">🧠 Gerando os e-mails…</b>
-      <span class="muted"> ${(c.build.feitos || 0)}/${c.build.total || "?"} prontos — ${esc(c.build.etapa || "")}</span>
-      <div style="margin-top:6px"><small class="muted">Pode deixar a aba aberta; a tela atualiza sozinha.</small></div></div>`
+  const banner = gerando ? renderBuildPanel(c.build)
     : erroBuild ? `<div class="card" style="border-left:4px solid #ff6b6b;background:#fff5f5">
       <b>⚠️ A geração falhou:</b> ${esc(c.build.erro || "erro desconhecido")}
       ${["cota", "conector"].includes(c.build.erro_tipo)
@@ -441,6 +538,8 @@ async function vCampanha(id) {
       ${c.inicio_em ? `<div style="margin-bottom:8px">📅 <b>1º envio:</b> ${esc(c.inicio_em)} <small class="muted">(próximos pela cadência)</small></div>` : ""}
       <b>Objetivo:</b> ${esc(c.objetivo)}<br>
       <small class="muted">${esc(c.contexto)}</small></div>
+    <div class="card" id="briefing-card"><h3>🧭 Briefing de lançamento</h3>
+      <span class="muted">${gerando ? "será escrito automaticamente ao fim da geração…" : "carregando…"}</span></div>
     ${(() => { const m = c.metricas || {}; return `
     <div class="card">
       <h3 style="margin:0 0 10px">📊 Métricas da campanha</h3>
@@ -496,10 +595,71 @@ async function vCampanha(id) {
     <div class="card" id="ads-briefing-card"><h3>📣 Google Ads (espelho da campanha)</h3>
       <span class="muted">carregando…</span></div>`;
   carregarAdsBriefing(c.id);
+  if (!gerando) carregarBriefing(c.id);
   // enquanto a IA estiver gerando os e-mails, atualiza a tela sozinha
   if (gerando) {
     const myhash = location.hash;
     setTimeout(() => { if (location.hash === myhash) vCampanha(id); }, 3000);
+  }
+}
+
+/* ---------- briefing de lançamento (os porquês / go-no-go) ---------- */
+const RECOMENDACAO_BRIEFING = {
+  lancar: {rot: "✅ Recomendação: LANÇAR", cor: "#29c287"},
+  ajustar: {rot: "🛠 Recomendação: AJUSTAR ANTES", cor: "#f2c94c"},
+  nao_lancar: {rot: "⛔ Recomendação: NÃO LANÇAR", cor: "#ff6b6b"},
+};
+
+async function carregarBriefing(id) {
+  const box = document.getElementById("briefing-card");
+  if (!box) return;
+  try {
+    const r = await api(`/api/campaigns/${id}/briefing`);
+    box.innerHTML = renderBriefingLancamento(id, r.briefing);
+  } catch (e) {
+    box.innerHTML = `<h3>🧭 Briefing de lançamento</h3><p class="form-feedback error">${esc(e.message)}</p>`;
+  }
+}
+
+function renderBriefingLancamento(id, b) {
+  const cabecalho = `<h3>🧭 Briefing de lançamento</h3>
+    <p class="muted">Os porquês da campanha — para você decidir se ativa ou não. Recomendação da IA; a decisão final é sua.</p>`;
+  if (!b) return `${cabecalho}
+    <button class="primary" onclick="gerarBriefingLancamento(${id})">✨ Gerar briefing com IA</button>
+    <span class="muted"> (também é gerado automaticamente ao fim da criação da campanha)</span>`;
+  const rec = RECOMENDACAO_BRIEFING[b.recomendacao] || {rot: "Recomendação: " + (b.recomendacao || "—"), cor: "#a3bac6"};
+  const med = b.medicao || {};
+  return `${cabecalho}
+    <div style="border-left:4px solid ${rec.cor};background:#f6f8f9;border-radius:0 10px 10px 0;padding:12px 16px;margin-bottom:10px">
+      <b>${esc(rec.rot)}</b><br><small>${esc(b.justificativa || "")}</small></div>
+    <p><b>Resumo:</b> ${esc(b.resumo || "—")}</p>
+    <p><b>ICP e dor:</b> ${esc(b.icp_e_dor || "—")}</p>
+    <p><b>Por que agora:</b> ${esc(b.por_que_agora || "—")}</p>
+    ${(b.por_email || []).length ? `<b>Por que cada e-mail:</b>
+      <table style="margin-top:6px"><tr><th>#</th><th>Por que este ângulo</th><th>Prova e origem</th></tr>
+      ${b.por_email.map(e => `<tr><td>E${e.ordem}</td><td>${esc(e.porque_este_angulo || "")}</td>
+        <td><small>${esc(e.prova_e_origem || "")}</small></td></tr>`).join("")}</table>` : ""}
+    ${(b.riscos || []).length ? `<p style="margin-top:10px"><b>⚠️ Riscos:</b></p>
+      <ul>${b.riscos.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}
+    <p><b>Medição:</b> utm_campaign=<code>${esc(med.utm_campaign || "—")}</code> ·
+      GA4 <code>${esc(med.evento_ga4 || "—")}</code> · ${esc(med.metrica_decisao || "")}</p>
+    ${(b.checklist_pre_lancamento || []).length ? `<p><b>Checklist antes de ativar:</b></p>
+      <ul>${b.checklist_pre_lancamento.map(x => `<li>☐ ${esc(x)}</li>`).join("")}</ul>` : ""}
+    <div class="toolbar"><small class="muted">gerado em ${esc(b.gerado_em || "—")}</small><span class="sp"></span>
+      <button onclick="gerarBriefingLancamento(${id})">↻ Regenerar</button></div>`;
+}
+
+async function gerarBriefingLancamento(id) {
+  const box = document.getElementById("briefing-card");
+  if (box) box.innerHTML = `<h3>🧭 Briefing de lançamento</h3>
+    <div class="spinner" style="width:18px;height:18px;display:inline-block;vertical-align:middle"></div>
+    <span class="muted"> a IA está consolidando os porquês da campanha (~1 min)…</span>`;
+  try {
+    const r = await api(`/api/campaigns/${id}/briefing`, {method: "POST"});
+    if (box) box.innerHTML = renderBriefingLancamento(id, r.briefing);
+  } catch (e) {
+    toast("Erro ao gerar briefing: " + e.message, 6000);
+    carregarBriefing(id);
   }
 }
 

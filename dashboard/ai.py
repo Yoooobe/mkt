@@ -12,6 +12,8 @@ import re
 import shutil
 import subprocess
 import threading
+import time
+from pathlib import Path
 
 import db
 
@@ -49,6 +51,16 @@ IMG_DIR = CONTEXT_DIR / "images"
 KB_DIR.mkdir(parents=True, exist_ok=True)
 IMG_DIR.mkdir(parents=True, exist_ok=True)
 MAX_KB_CHARS = 14000
+# As chamadas de portfólio (sugestão de campanhas) são poucas e estratégicas:
+# recebem um contexto maior para enxergar os skills + KBs inteiros.
+MAX_KB_PORTFOLIO = 24000
+
+# Fontes ORIGINAIS do skill GTM (workspace primeiro; fallback para a instalação do Codex).
+# sync_skill_kbs() as espelha em context/ para o copywriter usar sempre a versão atual.
+_SKILL_GTM_DIRS = [
+    db.GWS_DIR.parent / ".cursor" / "skills" / "gtm-engineer-growth-specialist",
+    Path.home() / ".codex" / "skills" / "gtm-engineer-growth-specialist",
+]
 
 # Regra operacional para toda geração de aquisição. O KB detalha provas, planos
 # e ICPs; este guia fixa o formato e impede que a IA volte ao enquadramento de
@@ -69,12 +81,36 @@ GUIA_GTM_CAMPANHAS = """GUIA GTM OBRIGATÓRIO:
 - Produza somente rascunhos. Não afirme que campanhas, anúncios, GTM ou conteúdo foram publicados."""
 
 
-def contexto():
+def sync_skill_kbs():
+    """Espelha os mds ORIGINAIS do skill GTM em context/ (fonte de verdade dos skills).
+
+    SKILL.md e platform-and-growth.md entram em kb/ com prefixo '0-' para serem
+    lidos PRIMEIRO pelo contexto(); competitive-landscape.md fica em context/
+    (fora do prompt padrão), disponível para consulta. Copia apenas quando a
+    fonte é mais nova. Devolve os nomes sincronizados nesta chamada."""
+    skill_dir = next((d for d in _SKILL_GTM_DIRS if (d / "SKILL.md").exists()), None)
+    if not skill_dir:
+        return []
+    alvos = [
+        (skill_dir / "SKILL.md", KB_DIR / "0-skill-gtm-growth.md"),
+        (skill_dir / "references" / "platform-and-growth.md", KB_DIR / "0-skill-platform-growth.md"),
+        (skill_dir / "references" / "competitive-landscape.md",
+         CONTEXT_DIR / "skill-competitive-landscape.md"),
+    ]
+    sincronizados = []
+    for src, dst in alvos:
+        if src.exists() and (not dst.exists() or src.stat().st_mtime > dst.stat().st_mtime):
+            shutil.copy2(src, dst)
+            sincronizados.append(dst.name)
+    return sincronizados
+
+
+def contexto(max_chars=MAX_KB_CHARS):
     """Concatena os KBs e lista as imagens disponíveis para a IA usar nos emails."""
     partes = []
     for f in sorted(KB_DIR.glob("*.md")):
         partes.append(f"### KB: {f.name}\n{f.read_text(encoding='utf-8', errors='replace')}")
-    kb = "\n\n".join(partes)[:MAX_KB_CHARS]
+    kb = "\n\n".join(partes)[:max_chars]
     imgs = [f.name for f in sorted(IMG_DIR.iterdir())
             if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp")]
     return kb, imgs
@@ -281,6 +317,25 @@ def _tipo_erro(msg):
     return "cota" if _erro_eh_cota(msg) else "outro"
 
 
+# Antes do 1º email concluído não há amostra de duração: o ETA usa este chute
+# (rotulado eta_estimada=True na resposta) e passa a usar a média real depois.
+CHUTE_EMAIL_S = 90
+MAX_LOG_BUILD = 60
+
+
+def _com_eta(p):
+    """Deriva percent/eta_s na LEITURA (registros antigos ganham os campos sem migração).
+    eta_s = média das durações já medidas × itens restantes."""
+    total, feitos = p.get("total") or 0, p.get("feitos") or 0
+    p["percent"] = int(feitos * 100 / total) if total else 0
+    if p.get("status") in ("gerando", "gerando_rascunhos") and total:
+        dur = [d for d in (p.get("duracoes_s") or []) if d]
+        media = (sum(dur) / len(dur)) if dur else (p.get("chute_item_s") or CHUTE_EMAIL_S)
+        p["eta_s"] = int(media * max(0, total - feitos))
+        p["eta_estimada"] = not dur
+    return p
+
+
 def build_progress(cid):
     raw = db.meta_get(f"build_{cid}", "")
     if not raw:
@@ -294,13 +349,24 @@ def build_progress(cid):
     if p.get("status") == "erro":
         # Reclassifica também registros antigos já gravados como "outro".
         p["erro_tipo"] = _tipo_erro(p.get("erro", ""))
-    return p
+    return _com_eta(p)
 
 
 def _set_progress(cid, **kw):
     p = build_progress(cid) or {}
     p.update(kw)
+    # percent/eta_s/eta_estimada são derivados na leitura; não persistir valores velhos
+    for k in ("percent", "eta_s", "eta_estimada"):
+        p.pop(k, None)
     db.meta_set(f"build_{cid}", json.dumps(p, ensure_ascii=False))
+
+
+def _log_progress(cid, msg):
+    """Linha do tempo do raciocínio da IA, visível na UI durante (e depois) do build."""
+    p = build_progress(cid) or {}
+    log = (p.get("log") or [])[-(MAX_LOG_BUILD - 1):]
+    log.append({"ts": db.now(), "msg": str(msg)[:400]})
+    _set_progress(cid, log=log)
 
 
 REGRA_PUBLICO = ("REGRA DE PÚBLICO (NUNCA violar): prospecção NÃO tem como alvo quem já é CLIENTE "
@@ -499,17 +565,25 @@ def _gerar_loop(cid, objetivo, emails, cad_min, kb, imgs, brief, temperatura="")
         if _geracao_cancelada(cid):
             return False
         e = emails[i - 1]
+        t0 = time.time()
         _set_progress(cid, etapa=f"escrevendo e-mail {i} de {len(emails)}: {e.get('nome', '')}",
                       feitos=i - 1)
         full = _gerar_email(objetivo, e, angulos, i, len(emails), kb, imgs, brief, estrategia)
         if _geracao_cancelada(cid):
             return False
+        _log_progress(cid, f"e-mail {i} escrito — assunto: “{full.get('assunto', '')}”")
         _set_progress(cid, etapa=f"revisando gancho/CTA do e-mail {i} de {len(emails)}")
+        antes = {k: (full.get(k) or "") for k in ("assunto", "preheader", "cta")}
         full = _revisar_email(full, estrategia, brief)
         # A chamada acima pode levar minutos. Revalida antes de qualquer escrita
         # para honrar uma pausa feita enquanto a IA estava trabalhando.
         if _geracao_cancelada(cid):
             return False
+        mudou = [f"{k}: “{antes[k]}” → “{full.get(k, '')}”"
+                 for k in antes if (full.get(k) or "") != antes[k]]
+        _log_progress(cid, f"revisão do e-mail {i}: " +
+                      ("ajustou " + " · ".join(mudou) if mudou
+                       else "aprovado sem ajustes de assunto/CTA"))
         alts = full.get("assuntos_alternativos") or []
         if not isinstance(alts, list):
             alts = []
@@ -526,9 +600,18 @@ def _gerar_loop(cid, objetivo, emails, cad_min, kb, imgs, brief, temperatura="")
                   (cid, i, f"ai:{tid}", offset))
         c.commit()
         c.close()
-        _set_progress(cid, feitos=i)
+        dur = ((build_progress(cid) or {}).get("duracoes_s") or [])[-19:]
+        dur.append(round(time.time() - t0, 1))
+        _set_progress(cid, feitos=i, duracoes_s=dur)
     if _geracao_cancelada(cid):
         return False
+    _set_progress(cid, etapa="escrevendo o briefing de lançamento…", feitos=len(emails))
+    _log_progress(cid, "todos os e-mails gerados — preparando o briefing de lançamento")
+    try:                                   # best-effort: falha não bloqueia o build
+        gerar_briefing_lancamento(cid)
+        _log_progress(cid, "briefing de lançamento pronto — revise antes de ativar")
+    except Exception as ex:
+        print(f"[briefing campanha {cid}] falhou (gere manualmente): {ex}", flush=True)
     _set_progress(cid, status="pronto", etapa="concluído", feitos=len(emails))
     return True
 
@@ -541,7 +624,11 @@ def _cadencia_desc(cad_min, cad_max):
 def _build_worker(cid, objetivo, tipo, n_emails, cad_min, cad_max, kb, imgs, brief, temperatura=""):
     """Gera a campanha email-por-email em background (sem nunca estourar timeout)."""
     try:
-        _set_progress(cid, status="gerando", total=n_emails, feitos=0, etapa="planejando a sequência…")
+        _set_progress(cid, status="gerando", total=n_emails, feitos=0,
+                      etapa="planejando a sequência…", iniciado_em=db.now(),
+                      duracoes_s=[], log=[])
+        _log_progress(cid, f"estrategista planejando {n_emails} e-mail(s) para cohort "
+                           f"{temperatura or 'sem temperatura dominante'}")
         plano = _plano_campanha(objetivo, n_emails, tipo, _cadencia_desc(cad_min, cad_max),
                                 kb, brief, temperatura)
         emails = (plano.get("emails") or [])[:n_emails]
@@ -563,6 +650,12 @@ def _build_worker(cid, objetivo, tipo, n_emails, cad_min, cad_max, kb, imgs, bri
         c.close()
         # persiste o plano (ângulos) p/ uma retomada futura ser exata (sem replanejar)
         _set_progress(cid, total=len(emails), plano_emails=emails, temperatura=temperatura)
+        _log_progress(cid, f"plano pronto — ICP: {insight.get('icp', '—')} · "
+                           f"gancho: {insight.get('gancho', '—')} · "
+                           f"prova: {insight.get('prova', '—')}")
+        _log_progress(cid, "ângulos escolhidos: " + "; ".join(
+            f"E{i} “{e.get('nome', '')}” ({e.get('angulo', '')})"
+            for i, e in enumerate(emails, start=1)))
         _gerar_loop(cid, objetivo, emails, cad_min, kb, imgs, brief, temperatura)
     except Exception as ex:
         _set_progress(cid, status="erro", erro=str(ex)[:300], erro_tipo=_tipo_erro(str(ex)))
@@ -729,3 +822,350 @@ final_url deve ser uma página real da 4unik (plataforma.4unik.com.br/landing/..
     c.commit()
     c.close()
     return res
+
+
+# ---------------- briefing de lançamento (os porquês da campanha) ----------------
+# Documento de decisão go/no-go: por que esta campanha, por que cada email,
+# qual prova sustenta cada ângulo (e de onde veio), riscos e recomendação.
+# É recomendação — a ativação continua manual.
+
+def briefing_lancamento(cid):
+    raw = db.meta_get(f"briefing_{cid}", "")
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def _dados_campanha_para_briefing(cid):
+    c = db.conn()
+    camp = c.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if not camp:
+        c.close()
+        raise ValueError("campanha não encontrada")
+    steps = []
+    for s in c.execute("""SELECT cs.ordem, cs.template_ref, cs.offset_dias, t.assunto, t.nome
+                          FROM campaign_steps cs
+                          LEFT JOIN templates_ai t ON cs.template_ref = 'ai:' || t.id
+                          WHERE cs.campaign_id=? ORDER BY cs.ordem""", (cid,)).fetchall():
+        steps.append({"ordem": s["ordem"], "nome": s["nome"] or s["template_ref"],
+                      "assunto": s["assunto"] or "", "offset_dias": s["offset_dias"]})
+    emails_aud = [r["email"] for r in c.execute(
+        "SELECT email FROM campaign_contacts WHERE campaign_id=?", (cid,)).fetchall()]
+    c.close()
+    prog = build_progress(cid) or {}
+    # se a campanha nasceu do portfólio, recupera a crítica do copywriter
+    critica = ""
+    port = suggest_status() or {}
+    nome_port = next((x.get("nome") for x in port.get("criadas", []) if x.get("cid") == cid), None)
+    if nome_port:
+        sug = next((s for s in port.get("campanhas", []) if s.get("nome") == nome_port), {})
+        critica = sug.get("critica", "")
+    return dict(camp), steps, emails_aud, prog, critica
+
+
+def gerar_briefing_lancamento(cid):
+    """UMA chamada de IA que consolida o que já foi decidido/persistido em um
+    briefing de decisão. Persiste em meta briefing_{cid} e devolve o JSON."""
+    camp, steps, emails_aud, prog, critica = _dados_campanha_para_briefing(cid)
+    kb, _ = contexto()
+    resumo = db.resumo_audiencia(emails_aud)
+    brief_cohort = _fmt_cohort(resumo, camp.get("audience_profile") or "")
+    plano = prog.get("plano_emails") or []
+    angulos = "\n".join(f"- E{i} “{e.get('nome', '')}”: {e.get('angulo', '')}"
+                        for i, e in enumerate(plano, start=1)) or "—"
+    seq = "\n".join(f"- E{s['ordem']} “{s['nome']}” — assunto: “{s['assunto']}”"
+                    for s in steps) or "—"
+    res = _claude_json(f"""Você é o estrategista GTM e editor-chefe da 4Unik (Time 4Unik).
+Escreva o BRIEFING DE LANÇAMENTO desta campanha de email já gerada: os PORQUÊS que permitem
+à 4Unik decidir se ativa ou não. Seja honesto: aponte riscos e fraquezas reais; a recomendação
+"nao_lancar" ou "ajustar" é tão válida quanto "lancar". Toda prova citada deve indicar de QUAL
+KB veio; se não estiver nos KBs, rotule como hipótese. Devolva SOMENTE JSON válido, sem markdown:
+{{"resumo": "a campanha em 2-3 frases",
+ "icp_e_dor": "quem é o alvo e qual dor operacional concreta esta campanha ataca",
+ "por_que_agora": "por que faz sentido para ESTE cohort neste momento (use os dados do cohort)",
+ "por_email": [{{"ordem": 1, "porque_este_angulo": "por que este ângulo nesta posição da cadência",
+   "prova_e_origem": "prova usada e KB de origem, ou 'hipótese rotulada: …'"}}],
+ "riscos": ["risco concreto e por quê (ex.: base fria grande, cohort sem histórico, prova fraca)"],
+ "medicao": {{"utm_campaign": "slug", "evento_ga4": "evento esperado",
+   "metrica_decisao": "qual número decide se a campanha funcionou e em quanto tempo avaliar"}},
+ "recomendacao": "lancar | ajustar | nao_lancar",
+ "justificativa": "2-3 frases fundamentando a recomendação",
+ "checklist_pre_lancamento": ["item objetivo a conferir antes de ativar"]}}
+
+{REGRA_PUBLICO}
+
+{GUIA_GTM_CAMPANHAS}
+
+CONTEXTO (KBs da 4Unik):
+{kb}
+
+CAMPANHA:
+Nome: {camp.get('nome')} · Tipo: {camp.get('tipo')} · Objetivo: {camp.get('objetivo')}
+Contexto/plano registrado: {camp.get('contexto')}
+Temperatura do cohort: {prog.get('temperatura') or resumo.get('temperatura_dominante') or '—'}
+
+ÂNGULOS PLANEJADOS:
+{angulos}
+
+SEQUÊNCIA GERADA (assuntos reais):
+{seq}
+
+PERFIL REAL DO PÚBLICO (cohort):
+{brief_cohort}
+
+CRÍTICA DO COPYWRITER NO PORTFÓLIO (se houver): {critica or '—'}""", timeout=240)
+    res["gerado_em"] = db.now()
+    res["campanha_id"] = cid
+    db.meta_set(f"briefing_{cid}", json.dumps(res, ensure_ascii=False))
+    return res
+
+
+# ---------------- loop de sugestão de campanhas (portfólio) ----------------
+# Camada ACIMA de criar_campanha(): o estrategista GTM propõe o portfólio
+# completo de campanhas por ICP/temperatura, o copywriter critica e refina em
+# loop, e a geração cria cada sugestão como RASCUNHO pela pipeline existente.
+# Guardrail inalterado: nada é ativado nem enviado sem aprovação humana.
+
+SUGGEST_KEY = "campaign_suggestions"
+MAX_RODADAS_PORTFOLIO = 2
+
+
+def suggest_status():
+    raw = db.meta_get(SUGGEST_KEY, "")
+    if not raw:
+        return None
+    try:
+        return _com_eta(json.loads(raw))
+    except Exception:
+        return None
+
+
+def _suggest_set(**kw):
+    p = suggest_status() or {}
+    p.update(kw)
+    for k in ("percent", "eta_s", "eta_estimada"):
+        p.pop(k, None)
+    p["atualizado_em"] = db.now()
+    db.meta_set(SUGGEST_KEY, json.dumps(p, ensure_ascii=False))
+
+
+def _briefing_cohorts():
+    """Retrato agregado do CRM por temperatura (sem PII) + visão geral do ciclo
+    de estratégia já persistido em meta (evita reimportar strategy: circular)."""
+    partes = []
+    for temp in ("quente", "morno", "frio"):
+        try:
+            emails = db.resolve_audience([temp], None, True)
+            resumo = db.resumo_audiencia(emails)
+        except Exception:
+            resumo = {"total": 0}
+        partes.append(f"--- COHORT {temp.upper()} ({resumo.get('total', 0)} contatos) ---\n"
+                      f"{_fmt_cohort(resumo)}")
+    try:
+        snap = json.loads(db.meta_get("strategy_loop", "") or "{}")
+        partes.append("--- VISÃO GERAL DO FUNIL ---\n"
+                      f"Campanhas ativas: {snap.get('campanhas_ativas', 0)}; "
+                      f"rascunhos aguardando aprovação: {snap.get('campanhas_rascunho', 0)}.")
+    except Exception:
+        pass
+    return "\n\n".join(partes)
+
+
+_FORMATO_PORTFOLIO = """{"campanhas": [{
+  "nome": "nome curto da campanha",
+  "icp": "persona e dor operacional concreta",
+  "objetivo": "objetivo da campanha em 1-2 frases (vira o briefing da geração dos emails)",
+  "segmentos": ["quente" ou "morno" ou "frio" — 1 temperatura por campanha],
+  "n_emails": 3,
+  "tipo": "finita",
+  "cad_min": null, "cad_max": null,
+  "gancho": "ângulo de entrada",
+  "prova": "case/dado dos KBs ou hipótese CLARAMENTE rotulada",
+  "evento_ga4": "generate_lead | schedule_demo | contact_whatsapp | contact_email",
+  "utm_campaign": "slug-da-campanha"}]}"""
+
+
+def _portfolio_estrategista(kb, brief, max_campanhas, feedback=""):
+    extra = (f"\nFEEDBACK DO COPYWRITER NA RODADA ANTERIOR (corrija tudo que foi apontado):\n{feedback}"
+             if feedback else "")
+    return _claude_json(f"""Você é o estrategista GTM da 4Unik (Time 4Unik), operando o skill
+"GTM Engineer & Growth Specialist" (os KBs com prefixo 0-skill são os mds originais do skill:
+trate-os como fonte de verdade de posicionamento, provas, planos e ICPs).
+PROPONHA um portfólio de até {max_campanhas} campanhas de email DISTINTAS entre si — cada uma
+com UM ICP dominante e UMA temperatura de cohort — cobrindo os cohorts com contatos disponíveis.
+NÃO escreva os emails; só o plano de cada campanha. Prefira poucas campanhas fortes a variações
+genéricas. Devolva SOMENTE JSON válido, sem markdown, neste formato:
+{_FORMATO_PORTFOLIO}
+
+Regras do plano: n_emails entre 3 e 5; tipo "finita" com cad_min/cad_max null (cadência fixa),
+ou "infinita" com cad_min/cad_max em dias; utm_campaign em kebab-case; não proponha campanha
+para cohort com 0 contatos.
+
+CONTEXTO (skills + KBs da 4Unik):
+{kb}
+
+PERFIL DOS COHORTS DO CRM:
+{brief}
+
+{REGRA_PUBLICO}
+
+{GUIA_GTM_CAMPANHAS}{extra}""", timeout=240)
+
+
+def _portfolio_critica(portfolio, kb, brief):
+    """Crítica do copywriter/editor-chefe sobre o portfólio. Devolve o portfólio
+    refinado com 'aprovado' por campanha + 'aprovado_geral'. Falha nunca quebra o
+    loop: devolve None e o chamador mantém a proposta original."""
+    try:
+        rev = _claude_json(f"""Você é o copywriter e editor-chefe da 4Unik (Time 4Unik).
+Critique o portfólio de campanhas abaixo como um editor exigente:
+1. ÂNGULOS: há campanhas repetindo gancho/ICP? Cada uma tem dor operacional concreta?
+2. EVIDÊNCIA: toda prova está nos KBs ou rotulada como hipótese? Nada inventado?
+3. FUNIL: a pressão de CTA combina com a temperatura do cohort (frio sem pressão de demo)?
+4. MENSURAÇÃO: evento_ga4 permitido e utm_campaign coerente?
+Refine o que estiver fraco (pode reescrever nome, objetivo, gancho, prova) e marque cada
+campanha com "aprovado": true/false e "critica": "1 frase com o motivo". Remova campanhas
+irrecuperáveis. Devolva SOMENTE JSON válido, sem markdown, no MESMO formato do portfólio,
+acrescentando os campos "aprovado" e "critica" por campanha e, no topo,
+"aprovado_geral": true/false (true = o portfólio inteiro está pronto para gerar).
+
+CONTEXTO (skills + KBs da 4Unik):
+{kb}
+
+PERFIL DOS COHORTS DO CRM:
+{brief}
+
+{REGRA_PUBLICO}
+
+{GUIA_GTM_CAMPANHAS}
+
+PORTFÓLIO A CRITICAR:
+{json.dumps(portfolio, ensure_ascii=False)}""", timeout=240)
+        if not isinstance(rev, dict) or not rev.get("campanhas"):
+            return None
+        return rev
+    except Exception as ex:
+        print(f"[crítica do portfólio] falhou, mantendo proposta: {ex}", flush=True)
+        return None
+
+
+def sugerir_campanhas(max_campanhas=5):
+    """Loop estrategista → crítica do copywriter (até MAX_RODADAS_PORTFOLIO rodadas).
+    Persiste o portfólio em meta e devolve o status final. Não gera nada ainda."""
+    max_campanhas = max(1, min(int(max_campanhas or 5), 8))
+    sincronizados = sync_skill_kbs()
+    kb, _ = contexto(MAX_KB_PORTFOLIO)
+    _suggest_set(status="gerando", etapa="analisando cohorts do CRM…", erro="",
+                 campanhas=[], criadas=[], skills_sincronizados=sincronizados)
+    brief = _briefing_cohorts()
+    campanhas, feedback = [], ""
+    for rodada in range(1, MAX_RODADAS_PORTFOLIO + 1):
+        _suggest_set(etapa=f"estrategista GTM propondo portfólio (rodada {rodada})…", rodada=rodada)
+        proposta = _portfolio_estrategista(kb, brief, max_campanhas, feedback)
+        campanhas = (proposta.get("campanhas") or [])[:max_campanhas]
+        if not campanhas:
+            raise RuntimeError("a IA não devolveu sugestões de campanha")
+        _suggest_set(campanhas=campanhas, etapa=f"copywriter criticando o portfólio (rodada {rodada})…")
+        rev = _portfolio_critica({"campanhas": campanhas}, kb, brief)
+        if rev:
+            campanhas = (rev.get("campanhas") or campanhas)[:max_campanhas]
+            _suggest_set(campanhas=campanhas)
+            if rev.get("aprovado_geral") and all(c.get("aprovado", True) for c in campanhas):
+                break
+            feedback = "; ".join(f"{c.get('nome', '?')}: {c.get('critica', '')}"
+                                 for c in campanhas if c.get("critica"))
+        else:
+            break
+    _suggest_set(status="pronto", campanhas=campanhas,
+                 etapa="portfólio pronto — revise e gere os rascunhos")
+    return suggest_status()
+
+
+def gerar_portfolio(sender_id=1):
+    """Gera cada sugestão aprovada como campanha RASCUNHO via criar_campanha(),
+    SEQUENCIALMENTE (espera o build de uma terminar antes da próxima, para não
+    disparar N gerações do claude em paralelo). Idempotente: pula as já criadas."""
+    p = suggest_status() or {}
+    aprovadas = [s for s in p.get("campanhas", []) if s.get("aprovado", True)]
+    if not aprovadas:
+        raise RuntimeError("nenhuma sugestão aprovada no portfólio — rode a sugestão antes")
+    criadas = p.get("criadas") or []
+    ja_criadas = {c.get("nome") for c in criadas}
+    # ETA por campanha: plano + (escrita+revisão) por email — chute de ~90s por chamada
+    medio_emails = sum(int(s.get("n_emails") or 3) for s in aprovadas) / len(aprovadas)
+    _suggest_set(status="gerando_rascunhos", total=len(aprovadas), feitos=len(criadas),
+                 duracoes_s=[], chute_item_s=int(CHUTE_EMAIL_S * (medio_emails + 1)))
+    for i, s in enumerate(aprovadas, 1):
+        if s.get("nome") in ja_criadas:
+            continue
+        t0 = time.time()
+        _suggest_set(etapa=f"gerando rascunho {i} de {len(aprovadas)}: {s.get('nome', '')}")
+        objetivo = " ".join(x for x in (
+            s.get("objetivo", ""),
+            f"ICP: {s.get('icp', '')}." if s.get("icp") else "",
+            f"Gancho: {s.get('gancho', '')}." if s.get("gancho") else "",
+            f"Prova (só se estiver nos KBs): {s.get('prova', '')}." if s.get("prova") else "",
+        ) if x)
+        segs = [t for t in (s.get("segmentos") or []) if t in ("quente", "morno", "frio")]
+        cid = criar_campanha(objetivo, s.get("tipo") or "finita",
+                             s.get("cad_min"), s.get("cad_max"),
+                             s.get("n_emails") or 3, segs or None, True, None, sender_id)
+        criadas.append({"cid": cid, "nome": s.get("nome", f"Campanha {i}")})
+        _suggest_set(criadas=criadas)
+        while True:                       # sequencial: espera este build acabar
+            bp = build_progress(cid) or {}
+            if bp.get("status") in ("pronto", "erro"):
+                break
+            time.sleep(5)
+        dur = ((suggest_status() or {}).get("duracoes_s") or [])[-9:]
+        dur.append(round(time.time() - t0, 1))
+        _suggest_set(feitos=i, duracoes_s=dur)
+    _suggest_set(status="pronto",
+                 etapa="rascunhos gerados — revise, aprove os emails e ative no dashboard")
+    return suggest_status()
+
+
+def _portfolio_worker(max_campanhas, auto_gerar, sender_id):
+    try:
+        sugerir_campanhas(max_campanhas)
+        if auto_gerar:
+            gerar_portfolio(sender_id)
+    except Exception as ex:
+        _suggest_set(status="erro", erro=str(ex)[:300], erro_tipo=_tipo_erro(str(ex)))
+        print(f"[sugestão de campanhas] ERRO: {ex}", flush=True)
+
+
+def iniciar_sugestao(max_campanhas=5, auto_gerar=False, sender_id=1):
+    """Dispara o loop de sugestão (e opcionalmente a geração) em background."""
+    p = suggest_status() or {}
+    if p.get("status") in ("gerando", "gerando_rascunhos"):
+        return {"status": p["status"], "nota": "já existe um loop de sugestão em andamento",
+                "etapa": p.get("etapa", "")}
+    _suggest_set(status="gerando", etapa="iniciando…", erro="", campanhas=[], criadas=[])
+    threading.Thread(target=_portfolio_worker,
+                     args=(max_campanhas, auto_gerar, sender_id), daemon=True).start()
+    return {"status": "gerando",
+            "nota": "Sugestão de campanhas iniciada. Acompanhe em GET /api/campaigns/suggest."}
+
+
+def iniciar_geracao_portfolio(sender_id=1):
+    """Dispara a geração dos rascunhos do portfólio já sugerido, em background."""
+    p = suggest_status() or {}
+    if p.get("status") in ("gerando", "gerando_rascunhos"):
+        return {"status": p["status"], "nota": "geração já em andamento", "etapa": p.get("etapa", "")}
+    if not p.get("campanhas"):
+        raise RuntimeError("nenhum portfólio sugerido — rode POST /api/campaigns/suggest antes")
+
+    def worker():
+        try:
+            gerar_portfolio(sender_id)
+        except Exception as ex:
+            _suggest_set(status="erro", erro=str(ex)[:300], erro_tipo=_tipo_erro(str(ex)))
+            print(f"[geração do portfólio] ERRO: {ex}", flush=True)
+    _suggest_set(status="gerando_rascunhos", etapa="iniciando geração dos rascunhos…", erro="")
+    threading.Thread(target=worker, daemon=True).start()
+    return {"status": "gerando_rascunhos",
+            "nota": "Geração dos rascunhos iniciada. Nada será ativado ou enviado automaticamente."}
