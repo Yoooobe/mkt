@@ -190,7 +190,8 @@ def preparar_perfil(sid):
     import shutil
     s = db.sender_get(sid)
     if not s or not (s.get("slug") or "").strip():
-        return {"ok": False, "erro": "remetente default (frank) já está conectado"}
+        return {"ok": False, "erro": "a conta principal usa o perfil da máquina — "
+                                     "conecte pelo botão Conectar conta (login OAuth)"}
     home = gws_home(s)
     cfg = os.path.join(home, ".config", "gws")
     os.makedirs(cfg, exist_ok=True)
@@ -204,38 +205,31 @@ def preparar_perfil(sid):
                           f"— logue no navegador como {s['email']} e depois clique em Verificar.")}
 
 
-def _gws_auth_info(home):
-    """JSON do `gws auth status` do perfil (HOME real quando home=None). {} em erro."""
-    env = None
-    if home:
-        env = os.environ.copy()
-        env["HOME"] = home
-        env["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
-    try:
-        out = subprocess.run(["gws", "auth", "status"], capture_output=True, text=True,
-                             timeout=30, env=env)
-        m = re.search(r"\{.*\}", out.stdout, re.S)
-        return json.loads(m.group(0)) if m else {}
-    except Exception:
-        return {}
-
-
 def sender_auth_status(sender):
-    """🟢/🔴 — autenticação REAL do perfil gws do remetente.
+    """🟢/🔴 — teste REAL de conexão: chama a API Gmail (getProfile) no perfil.
 
-    Sem atalhos: até a conta default (HOME real) é verificada de verdade — precisa
-    ter refresh token E estar logada EXATAMENTE no e-mail do remetente. Antes o
-    default retornava 'conectado' hardcoded e o envio saía por qualquer conta que
-    estivesse logada na máquina (ex.: pessoal), com o Gmail reescrevendo o From."""
+    Sem atalhos nem status 'mocado': antes a conta default retornava 'conectado'
+    hardcoded e o envio saía por QUALQUER conta logada na máquina (o Gmail
+    reescrevia o From). O getProfile valida as três coisas que importam de uma
+    vez: credencial válida, conta EXATA do remetente e permissão efetiva da API
+    (ex.: 403 de projeto GCP aparece aqui, não na hora do disparo)."""
     home = gws_home(sender)
     if home is not None and not (Path(home) / ".config" / "gws" / "credentials.enc").exists():
         return {"conectado": False, "motivo": "perfil ainda não criado/logado", "conta_real": ""}
-    d = _gws_auth_info(home)
-    conta_real = (d.get("user") or "").strip().lower()
+    try:
+        r = _gws(["users", "getProfile", "--params", '{"userId":"me"}'], home=home) or {}
+    except Exception as ex:
+        return {"conectado": False, "conta_real": "",
+                "motivo": f"não consegui checar a conexão ({str(ex)[:80]})"}
+    err = ((r.get("error") or {}).get("message") or "").strip()
+    conta_real = (r.get("emailAddress") or "").strip().lower()
     esperado = (sender.get("email") or "").strip().lower()
-    if not d.get("has_refresh_token"):
-        return {"conectado": False, "motivo": "precisa login", "conta_real": conta_real}
-    if conta_real and conta_real != esperado:
+    if err:
+        return {"conectado": False, "conta_real": "",
+                "motivo": f"API Gmail recusou: {err.split(chr(10))[0][:160]}"}
+    if not conta_real:
+        return {"conectado": False, "motivo": "precisa login", "conta_real": ""}
+    if conta_real != esperado:
         return {"conectado": False, "conta_real": conta_real,
                 "motivo": f"logado como {conta_real} — conecte a conta certa"}
     return {"conectado": True, "motivo": "ok", "conta_real": conta_real}
