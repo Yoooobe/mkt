@@ -1576,6 +1576,24 @@ def campaign_resume_build(cid: int):
             "nota": "Retomando a redação dos e-mails de onde parou — acompanhe na tela da campanha."}
 
 
+class ReescreverBody(BaseModel):
+    diretrizes: str                      # novas orientações do dono da campanha
+    ordens: Optional[List[int]] = None   # e-mails a reescrever (vazio/None = todos)
+
+
+@app.post("/api/campaigns/{cid}/rewrite")
+def campaign_rewrite(cid: int, b: ReescreverBody):
+    """Reescreve os e-mails da campanha com novas diretrizes + análise (métricas reais)
+    + briefing de lançamento. Guardrails: só campanhas NÃO ativas; as novas versões
+    nascem 'pendente' (exigem aprovação) e as antigas ficam preservadas como histórico."""
+    try:
+        r = ai.reescrever_campanha(cid, b.diretrizes, b.ordens)
+    except ValueError as ex:
+        return JSONResponse({"erro": str(ex)}, status_code=409)
+    return {**r, "status": "gerando",
+            "nota": "Reescrevendo os e-mails com as novas diretrizes — acompanhe na tela da campanha."}
+
+
 def _campaign_delete_safe(c, camp):
     """Rotina segura de exclusão de uma campanha (sem commit): se estiver ativa marca
     'pausada' primeiro, cancela a fila pendente de envio e só então apaga etapas,

@@ -529,6 +529,8 @@ async function vCampanha(id) {
         : `<button class="green" ${podeAtivar ? "" : `disabled title='${gerando ? "aguarde a geração terminar" : "aprove todos os templates antes"}'`}
              onclick="campAtivar(${c.id},${c.total_contatos})">▶ ${c.status === "pausada" ? "Retomar campanha" : "Ativar campanha"}</button>`}
       <button onclick="editarCampanha(${c.id})" ${c.status === "ativa" ? "disabled title='Pause a campanha antes de editar'" : ""}>✏️ Editar</button>
+      <button onclick="dlgReescrever(${c.id})" ${gerando || c.status === "ativa" || !c.steps.length
+        ? `disabled title='${gerando ? "aguarde a geração terminar" : c.status === "ativa" ? "pause a campanha antes de reescrever" : "a campanha ainda não tem e-mails"}'` : ""}>🔁 Reescrever e-mails</button>
       <button onclick="campTeste(${c.id})" ${c.steps.length ? "" : "disabled"}>📨 Enviar teste</button>
       <button class="warn" onclick="campExcluir(${c.id}, ${JSON.stringify(c.nome)})">🗑 Excluir</button>
     </div>
@@ -755,6 +757,32 @@ async function editarCampanha(id) {
   };
   dlg.showModal();
 }
+/* ---------- reescrita dos e-mails com novas diretrizes ---------- */
+async function dlgReescrever(id) {
+  const c = await api(`/api/campaigns/${id}`);
+  const box = document.getElementById("rw-steps");
+  box.innerHTML = c.steps.map(s =>
+    `<label class="tagopt"><input type="checkbox" class="rw-step" value="${s.ordem}" checked>
+      E${s.ordem} ${esc(s.nome || "")} <small class="muted">“${esc((s.assunto || "").slice(0, 48))}”</small></label>`).join("");
+  document.getElementById("rw-diretrizes").value = "";
+  const dlg = document.getElementById("dlg-reescrever");
+  document.getElementById("rw-executar").onclick = async () => {
+    const diretrizes = document.getElementById("rw-diretrizes").value.trim();
+    if (!diretrizes) return toast("Descreva as novas diretrizes para a reescrita.");
+    const marcados = [...document.querySelectorAll(".rw-step:checked")].map(x => +x.value);
+    if (!marcados.length) return toast("Escolha pelo menos um e-mail para reescrever.");
+    // ordens vazio = todos; mandar a lista só quando for um subconjunto
+    const ordens = marcados.length === c.steps.length ? null : marcados;
+    dlg.close();
+    try {
+      const r = await api(`/api/campaigns/${id}/rewrite`, {json: {diretrizes, ordens}});
+      toast(r.nota || "Reescrevendo os e-mails… 🔁", 5000);
+      vCampanha(id);
+    } catch (e) { toast("Não foi possível reescrever: " + e.message, 7000); }
+  };
+  dlg.showModal();
+}
+
 const frow = (label, n, total) =>
   `<div class="frow"><span class="flabel">${esc(label)}</span>
    <div class="fbar" style="width:${Math.max(4, n / Math.max(total, 1) * 170)}px"></div>

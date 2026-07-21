@@ -705,6 +705,213 @@ def retomar_campanha(cid):
     return cid
 
 
+# ---------------- reescrita dos e-mails com novas diretrizes ----------------
+# Quando os e-mails gerados não agradam, a reescrita cria NOVAS versões guiadas
+# pelas diretrizes do usuário + análise da campanha (métricas reais) + briefing
+# de lançamento. Guardrails: novas versões nascem 'pendente' (exigem aprovação),
+# os steps passam a apontar para elas e as versões antigas ficam preservadas em
+# templates_ai como histórico. Só campanhas NÃO ativas podem ser reescritas.
+
+def _analise_campanha(cid):
+    """Resumo objetivo de desempenho + briefing de lançamento, injetado no prompt
+    de reescrita para a IA decidir O QUE mudar (não só COMO escrever)."""
+    c = db.conn()
+    enviados = c.execute("SELECT COUNT(*) AS n FROM sends WHERE campaign_id=?",
+                         (cid,)).fetchone()["n"]
+    aberturas = c.execute("SELECT COUNT(DISTINCT track_id) AS n FROM events "
+                          "WHERE campaign_id=? AND type='open'", (cid,)).fetchone()["n"]
+    cliques = c.execute("SELECT COUNT(DISTINCT track_id) AS n FROM events "
+                        "WHERE campaign_id=? AND type='click'", (cid,)).fetchone()["n"]
+    respostas = c.execute("""SELECT COUNT(DISTINCT r.msgid) AS n FROM replies r
+                             JOIN sends s ON s.thread=r.thread
+                             WHERE s.campaign_id=? AND r.thread!=''""", (cid,)).fetchone()["n"]
+    c.close()
+    partes = []
+    if enviados:
+        partes.append(f"DESEMPENHO REAL até agora: {enviados} enviados, {aberturas} aberturas, "
+                      f"{cliques} cliques, {respostas} respostas. Se aberturas estão baixas o "
+                      f"problema é assunto/remetente; se abrem e não clicam, é corpo/CTA.")
+    else:
+        partes.append("A campanha ainda NÃO teve envios — a reescrita é preventiva "
+                      "(baseie-se nas diretrizes e no briefing).")
+    b = briefing_lancamento(cid) or {}
+    if b:
+        riscos = "; ".join(str(r) for r in (b.get("riscos") or []))
+        partes.append(f"BRIEFING DE LANÇAMENTO — resumo: {b.get('resumo', '—')} · "
+                      f"recomendação: {b.get('recomendacao', '—')} "
+                      f"({b.get('justificativa', '')}) · riscos apontados: {riscos or '—'}")
+    return "\n".join(partes)
+
+
+def _reescrever_email(objetivo, atual, diretrizes, analise, ordem, n, kb, imgs, brief,
+                      estrategia, angulos):
+    """Uma chamada por e-mail: reescreve a versão atual seguindo as novas diretrizes."""
+    return _claude_json(f"""Você é o copywriter da 4Unik (Time 4Unik). REESCREVA o e-mail {ordem} de {n}
+de uma campanha existente. As NOVAS DIRETRIZES abaixo têm PRIORIDADE MÁXIMA — elas vieram do dono da
+campanha após analisar a versão atual. Mantenha o que funciona; mude o que as diretrizes pedirem.
+Devolva SOMENTE JSON válido, sem markdown:
+{{"assunto": "assunto principal",
+ "assuntos_alternativos": ["variante com abordagem de CURIOSIDADE",
+   "variante com ESPECIFICIDADE NUMÉRICA ou GUERRILHA/CONTRASTE"],
+ "preheader": "...", "cta": "rótulo do botão",
+ "cta_url": "url do CTA (Calendly/WhatsApp do contexto, ou vazio)",
+ "inner_html": "HTML do miolo", "texto_plano": "versão text/plain completa"}}
+
+NOVAS DIRETRIZES DO DONO DA CAMPANHA (prioridade máxima):
+{diretrizes}
+
+ANÁLISE DA CAMPANHA (use como insight para decidir o que mudar):
+{analise}
+
+{GUIA_HTML}
+
+CONTEXTO (KBs da 4Unik):
+{kb}
+
+IMAGENS DISPONÍVEIS: {', '.join(imgs) or 'nenhuma'}
+
+PERFIL DO PÚBLICO (cohort):
+{brief}
+
+{estrategia}
+
+VARIÁVEIS DE PERSONALIZAÇÃO (use só as que fizerem sentido):
+{{{{nome}}}}, {{{{empresa}}}}, {{{{cargo}}}}, {{{{porte}}}}, {{{{erp}}}}.
+
+{REGRA_PUBLICO}
+
+{GUIA_GTM_CAMPANHAS}
+
+SEQUÊNCIA COMPLETA (para NÃO repetir o que vai nos outros e-mails):
+{angulos}
+
+>>> VERSÃO ATUAL DO E-MAIL {ordem} (a melhorar segundo as diretrizes):
+{json.dumps(atual, ensure_ascii=False)}
+
+OBJETIVO GERAL DA CAMPANHA: {objetivo}""", timeout=240)
+
+
+def _rewrite_worker(cid, diretrizes, ordens):
+    """Reescreve os e-mails selecionados em background, um a um, com progresso na
+    mesma infra do build (a tela da campanha mostra a barra e o raciocínio)."""
+    try:
+        c = db.conn()
+        camp = c.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
+        steps = c.execute("""SELECT cs.ordem, cs.template_ref, t.nome, t.assunto, t.preheader,
+                                    t.cta, t.cta_url, t.inner_html, t.texto_plano
+                             FROM campaign_steps cs
+                             LEFT JOIN templates_ai t ON cs.template_ref='ai:'||t.id
+                             WHERE cs.campaign_id=? ORDER BY cs.ordem""", (cid,)).fetchall()
+        emails_aud = [r["email"] for r in c.execute(
+            "SELECT email FROM campaign_contacts WHERE campaign_id=?", (cid,)).fetchall()]
+        c.close()
+        if not camp:
+            raise RuntimeError("campanha não encontrada")
+        # steps builtin (campanha de template fixo) não têm o que reescrever aqui
+        alvo = [s for s in steps if (s["inner_html"] or "")
+                and (not ordens or s["ordem"] in ordens)]
+        if not alvo:
+            raise RuntimeError("nenhum e-mail de IA elegível para reescrita "
+                               "(templates fixos não são reescritos)")
+        _set_progress(cid, status="gerando", total=len(alvo), feitos=0, iniciado_em=db.now(),
+                      etapa="analisando a campanha e as novas diretrizes…", duracoes_s=[])
+        _log_progress(cid, f"reescrita iniciada ({len(alvo)} e-mail(s)) — diretrizes: "
+                           f"{diretrizes[:220]}")
+        objetivo = camp["objetivo"] or ""
+        kb, imgs = contexto()
+        resumo = db.resumo_audiencia(emails_aud)
+        brief = _fmt_cohort(resumo, camp["audience_profile"] or "")
+        temperatura = ((build_progress(cid) or {}).get("temperatura")
+                       or resumo.get("temperatura_dominante") or "")
+        estrategia = _estrategia_bloco(temperatura)
+        analise = _analise_campanha(cid)
+        angulos = "; ".join(f"{s['ordem']}) {s['nome'] or ''}: assunto atual “{s['assunto'] or ''}”"
+                            for s in steps)
+        feitos = 0
+        for s in alvo:
+            if _geracao_cancelada(cid):
+                return
+            t0 = time.time()
+            _set_progress(cid, etapa=f"reescrevendo e-mail {s['ordem']}: {s['nome'] or ''}",
+                          feitos=feitos)
+            atual = {k: (s[k] or "") for k in ("assunto", "preheader", "cta", "cta_url",
+                                               "inner_html", "texto_plano")}
+            novo = _reescrever_email(objetivo, atual, diretrizes, analise, s["ordem"],
+                                     len(steps), kb, imgs, brief, estrategia, angulos)
+            if not isinstance(novo, dict) or not (novo.get("assunto") and novo.get("inner_html")
+                                                  and novo.get("texto_plano")):
+                raise RuntimeError(f"a IA não devolveu o e-mail {s['ordem']} reescrito completo")
+            if _geracao_cancelada(cid):
+                return
+            _set_progress(cid, etapa=f"revisando gancho/CTA do e-mail {s['ordem']}")
+            novo = _revisar_email(novo, estrategia, brief)
+            if _geracao_cancelada(cid):
+                return
+            alts = novo.get("assuntos_alternativos")
+            alts = alts if isinstance(alts, list) else []
+            alts_json = json.dumps([str(a) for a in alts[:2]], ensure_ascii=False)
+            c = db.conn()
+            c.execute("""INSERT INTO templates_ai(nome,assunto,preheader,cta,cta_url,inner_html,
+                                                  texto_plano,status,origem,assuntos_alt)
+                         VALUES(?,?,?,?,?,?,?,'pendente','ia',?)""",
+                      (s["nome"] or f"Email {s['ordem']}", novo.get("assunto", ""),
+                       novo.get("preheader", ""), novo.get("cta", ""), novo.get("cta_url", ""),
+                       novo.get("inner_html", ""), novo.get("texto_plano", ""), alts_json))
+            tid = c.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
+            c.execute("UPDATE campaign_steps SET template_ref=? WHERE campaign_id=? AND ordem=?",
+                      (f"ai:{tid}", cid, s["ordem"]))
+            c.commit()
+            c.close()
+            feitos += 1
+            dur = ((build_progress(cid) or {}).get("duracoes_s") or [])[-19:]
+            dur.append(round(time.time() - t0, 1))
+            _set_progress(cid, feitos=feitos, duracoes_s=dur)
+            _log_progress(cid, f"e-mail {s['ordem']} reescrito — assunto: "
+                               f"“{novo.get('assunto', '')}” (antes: “{s['assunto'] or ''}”)")
+        _set_progress(cid, etapa="atualizando o briefing de lançamento…")
+        try:                                   # best-effort: falha não bloqueia a reescrita
+            gerar_briefing_lancamento(cid)
+            _log_progress(cid, "briefing de lançamento atualizado com a nova versão dos e-mails")
+        except Exception as ex:
+            print(f"[reescrita campanha {cid}] briefing falhou (gere manualmente): {ex}", flush=True)
+        _set_progress(cid, status="pronto",
+                      etapa="reescrita concluída — revise e aprove os novos e-mails")
+        _log_progress(cid, "reescrita concluída — os novos e-mails nasceram PENDENTES; "
+                           "as versões antigas ficaram guardadas como histórico")
+    except Exception as ex:
+        _set_progress(cid, status="erro", erro=str(ex)[:300], erro_tipo=_tipo_erro(str(ex)))
+        print(f"[reescrita campanha {cid}] ERRO: {ex}", flush=True)
+
+
+def reescrever_campanha(cid, diretrizes, ordens=None):
+    """Dispara a reescrita em background. Valida os guardrails NA HORA (erro imediato
+    na API); o trabalho pesado acontece no worker, acompanhável via build_progress."""
+    diretrizes = (diretrizes or "").strip()
+    if not diretrizes:
+        raise ValueError("descreva as novas diretrizes para a reescrita")
+    c = db.conn()
+    camp = c.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
+    n_steps = c.execute("SELECT COUNT(*) AS n FROM campaign_steps WHERE campaign_id=?",
+                        (cid,)).fetchone()["n"]
+    c.close()
+    if not camp:
+        raise ValueError("campanha não encontrada")
+    if camp["status"] == "ativa":
+        raise ValueError("pause a campanha antes de reescrever os e-mails")
+    if not n_steps:
+        raise ValueError("a campanha ainda não tem e-mails gerados")
+    prog = build_progress(cid) or {}
+    if prog.get("status") == "gerando":
+        raise ValueError("aguarde: já existe uma geração em andamento nesta campanha")
+    ordens = sorted({int(o) for o in (ordens or [])})
+    _set_progress(cid, status="gerando", erro="", erro_tipo="",
+                  etapa="preparando a reescrita…", feitos=0,
+                  total=len(ordens) or n_steps)
+    threading.Thread(target=_rewrite_worker, args=(cid, diretrizes, ordens),
+                     daemon=True).start()
+    return {"id": cid, "emails": ordens or "todos"}
+
+
 def criar_campanha(objetivo, tipo="finita", cad_min=None, cad_max=None,
                    n_emails=3, segmentos=None, apenas_sem_resposta=True, tags=None, sender_id=1,
                    inicio_em="", audience_profile=""):

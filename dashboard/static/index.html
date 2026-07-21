@@ -91,6 +91,24 @@
   <div class="toolbar"><span class="sp"></span><button onclick="document.getElementById('dlg-editar-campanha').close()">Cancelar</button><button class="primary" id="ec-salvar">Salvar alterações</button></div>
 </dialog>
 
+<dialog id="dlg-reescrever" style="max-width:560px">
+  <h3>🔁 Reescrever e-mails com novas diretrizes</h3>
+  <p class="muted" style="margin-top:0">A IA reescreve os e-mails escolhidos seguindo as suas novas
+  orientações, usando também a <b>análise da campanha</b> (métricas reais) e o <b>briefing de
+  lançamento</b>. As novas versões nascem <b>pendentes</b> — nada é enviado sem você aprovar.
+  As versões antigas ficam guardadas como histórico.</p>
+  <div class="field"><label>Novas diretrizes / orientações *</label>
+    <textarea id="rw-diretrizes" rows="5" style="width:100%"
+      placeholder="ex: tom mais direto e menos formal; assunto com número concreto; CTA para WhatsApp em vez de Calendly; encurtar os e-mails; focar na dor de RH…"></textarea>
+    <small class="muted">Quanto mais específico, melhor: diga o que NÃO gostou e o que quer no lugar.</small></div>
+  <div class="field"><label>Quais e-mails reescrever</label>
+    <div id="rw-steps" class="tagpick"></div></div>
+  <div class="toolbar"><span class="sp"></span>
+    <button onclick="document.getElementById('dlg-reescrever').close()">Cancelar</button>
+    <button class="primary" id="rw-executar">🔁 Reescrever com IA</button>
+  </div>
+</dialog>
+
 <dialog id="dlg-template">
   <h3>✨ Novo template com IA</h3>
   <p class="muted">A IA redige com base no Contexto e o template nasce <b>pendente</b> —
@@ -171,6 +189,6 @@
 
 <script>window.API_KEY = "__API_KEY__";</script>
 <!-- Versão no URL evita que o navegador reaproveite uma tela antiga após atualizações locais. -->
-<script src="/static/app.js?v=20260716-perf-remoto"></script>
+<script src="/static/app.js?v=20260721-reescrever-emails"></script>
 </body>
 </html>
