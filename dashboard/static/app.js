@@ -123,7 +123,7 @@ async function vInicio() {
         <span>📞 <b>${d.telefones ?? 0}</b> telefones</span>
         <span>🗒️ <b>${d.historicos ?? 0}</b> históricos</span>
         <span>🎯 <b>${d.dados_ricos ?? 0}</b> dados ricos</span>
-        <span class="${estrategia.claude?.ok ? "sig-ok" : "sig-warn"}">${estrategia.claude?.ok ? "● Claude pronto" : "● Claude precisa atenção"}</span>
+        <span class="${estrategia.claude?.ok ? "sig-ok" : "sig-warn"}">${estrategia.claude?.ok ? "● IA pronta" : "● IA precisa atenção"}</span>
       </div>
       <button onclick="rodarEstrategia()">↻ Atualizar agora</button>
     </div>` : ""}

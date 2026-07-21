@@ -172,8 +172,21 @@ Confira também `npx wrangler tail` para ver os logs do entrypoint
   (ver passo 4b) para enviar e-mail a partir da nuvem.
 - Confirmar se o binário linux do `gws` (`@googleworkspace/cli`) baixa corretamente
   no build; se o npm mudar o nome do pacote, ajustar o `RUN npm install -g` no Dockerfile.
-- IA (`ai.py`) chama o CLI `claude` local — indisponível no container; os fluxos
-  de geração por IA degradam (erro tratado), o restante do dashboard funciona.
+- ~~IA (`ai.py`) chama o CLI `claude` local — indisponível no container~~ —
+  **resolvido**: a IA agora usa Vertex AI (Gemini, projeto GCP `mkt-4unik`) por
+  padrão (`FOURUNIK_MAIL_PROVIDER=vertex`), que funciona na nuvem. Para o
+  container, adicione o secret com o JSON **inline** da service account
+  (`afiliados-vertex@mkt-4unik`, role `roles/aiplatform.user`):
+
+  ```bash
+  # o valor é o conteúdo do JSON da SA (a var aceita caminho OU JSON inline)
+  npx wrangler secret put VERTEX_CREDENTIALS_JSON < ~/.config/4unik/vertex-sa.json
+  npx wrangler secret put VERTEX_PROJECT_ID    # mkt-4unik
+  ```
+
+  Opcionais: `VERTEX_LOCATION` (default `global`), `VERTEX_MODEL_PRO`
+  (`gemini-2.5-pro`), `VERTEX_MODEL_FLASH` (`gemini-2.5-flash`). O CLI `claude`
+  vira fallback local apenas onde existir.
 - GA4/Z-API na nuvem: adicionar os secrets opcionais (passo 3) se necessário.
 - Desativar o LaunchAgent local (`com.4unik.mail`) quando a nuvem virar a
   instância oficial — nunca rodar os dois replicando o mesmo caminho do R2.

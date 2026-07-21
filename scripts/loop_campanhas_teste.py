@@ -69,7 +69,7 @@ def main():
     args = parser.parse_args()
 
     db.init()
-    claude = ai.claude_status()
+    claude = ai.ai_status()
     if not claude.get("ok"):
         print(f"⚠️  Claude indisponível: {claude.get('mensagem')}")
         sys.exit(1)

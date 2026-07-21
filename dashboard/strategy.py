@@ -161,7 +161,7 @@ def run(reason="periodic", perform_sync=False):
             "historico_preenchido": cohort.get("com_historico", 0),
             "faltam_telefone": faltam_telefone, "faltam_historico": faltam_historico,
         },
-        "claude": ai.claude_status(),
+        "claude": ai.ai_status(),   # chave mantida por compat; reflete o provider ativo (vertex/claude)
         "midia_google": media,
         "seo_geo": seo_geo,
         "guardrail": "Ciclo apenas atualiza dados e estratégia; não gera, aprova, ativa ou envia campanhas.",

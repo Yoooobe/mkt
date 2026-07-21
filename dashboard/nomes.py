@@ -103,7 +103,7 @@ def analisar_lote(rows, batch=25, timeout=240):
         prompt = f"{PROMPT_REGRAS}\n\nCONTATOS:\n{json.dumps(lst, ensure_ascii=False)}"
         por_email = {}
         try:
-            res = ai._claude_json(prompt, timeout=timeout)
+            res = ai._ai_json(prompt, timeout=timeout, tier="flash")
             for d in (res.get("resultados") or []):
                 em = (d.get("email") or "").strip().lower()
                 if em:

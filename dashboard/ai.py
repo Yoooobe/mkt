@@ -16,9 +16,16 @@ import time
 from pathlib import Path
 
 import db
+import vertex
 
 # Modelo usado nas chamadas de IA do 4unik.mail (criação de campanhas/templates).
 CLAUDE_MODEL = os.environ.get("FOURUNIK_MAIL_MODEL", "opus")
+
+# Provider da IA: "vertex" (Gemini no projeto GCP mkt-4unik, default) ou
+# "claude" (CLI local). Quando o primário falha, o outro é tentado como
+# fallback se estiver disponível — a política "IA sugere, código decide"
+# vale igualmente para os dois transportes.
+AI_PROVIDER = (vertex.env_get("FOURUNIK_MAIL_PROVIDER", "vertex") or "vertex").strip().lower()
 
 # O `claude` é um CLI Node; sob o LaunchAgent o PATH é mínimo e não acha o `node`.
 # Montamos um PATH robusto para os subprocessos, incluindo os diretórios de node/claude.
@@ -124,6 +131,34 @@ def listar_contexto():
     return {"kb": kbs, "imagens": imgs}
 
 
+def _vertex_json(prompt, timeout=300, tier="pro"):
+    """Gemini via Vertex. tier 'flash' = classificações/lotes rápidos (sem thinking);
+    tier 'pro' = gerações de campanha/copy/estratégia."""
+    if tier == "flash":
+        return vertex.generate_json(prompt, model=vertex.MODEL_FLASH,
+                                    timeout=timeout, thinking_budget=0)
+    return vertex.generate_json(prompt, model=vertex.MODEL_PRO, timeout=timeout)
+
+
+def _ai_json(prompt, timeout=300, tier="pro"):
+    """Ponto único de geração JSON. Usa o provider configurado e cai para o
+    outro transporte quando o primário falha (ex.: CLI claude ausente no
+    container da nuvem, ou Vertex sem rede)."""
+    primary, fallback = ((_vertex_json, _claude_json) if AI_PROVIDER != "claude"
+                         else (_claude_json, _vertex_json))
+    try:
+        if primary is _vertex_json:
+            return primary(prompt, timeout=timeout, tier=tier)
+        return primary(prompt, timeout=timeout)
+    except Exception as exc:
+        try:
+            if fallback is _vertex_json:
+                return fallback(prompt, timeout=timeout, tier=tier)
+            return fallback(prompt, timeout=timeout)
+        except Exception:
+            raise exc
+
+
 def _claude_json(prompt, timeout=300):
     claude = shutil.which("claude", path=_subprocess_env()["PATH"]) or "claude"
     out = subprocess.run([claude, "--model", CLAUDE_MODEL, "-p", prompt],
@@ -143,6 +178,18 @@ def _claude_json(prompt, timeout=300):
         return json.loads(m.group(0))
     except json.JSONDecodeError as e:
         raise RuntimeError(f"claude -p devolveu JSON inválido: {e} — trecho: {m.group(0)[:200]}")
+
+
+def ai_status():
+    """Status do provider de IA ativo (para a UI/estratégia). Vertex valida a
+    credencial sem gastar tokens; claude consulta o login do CLI."""
+    if AI_PROVIDER != "claude":
+        st = vertex.vertex_status()
+        st["provider"] = "vertex"
+        return st
+    st = claude_status()
+    st["provider"] = "claude"
+    return st
 
 
 def claude_status():
@@ -173,7 +220,7 @@ def sugerir_enriquecimento_contato(contato):
     atual = {k: (contato.get(k) or "") for k in (
         "email", "nome", "empresa", "telefone", "cargo", "porte_funcionarios",
         "erp", "etapa_funil", "estado_negocio", "qualificacao", "enriquecimento")}
-    return _claude_json(f"""Você é um analista de sales intelligence B2B da 4Unik.
+    return _ai_json(f"""Você é um analista de sales intelligence B2B da 4Unik.
 Pesquise, quando as ferramentas/conectores disponíveis permitirem, apenas fontes públicas e profissionais
 para completar este contato. Não use, não infira e não solicite dados pessoais sensíveis. Não invente.
 Se não encontrar evidência pública confiável, deixe o campo vazio.
@@ -195,7 +242,7 @@ REGRAS:
 - confiança geral deve refletir a qualidade das fontes.
 
 DADOS ATUAIS DO CRM:
-{json.dumps(atual, ensure_ascii=False)}""", timeout=180)
+{json.dumps(atual, ensure_ascii=False)}""", timeout=180, tier="flash")
 
 
 GUIA_HTML = """REGRAS DO HTML (inner_html = só o miolo; a moldura oficial shell() é aplicada pelo sistema):
@@ -216,7 +263,7 @@ GUIA_HTML = """REGRAS DO HTML (inner_html = só o miolo; a moldura oficial shell
 
 def criar_template(briefing):
     kb, imgs = contexto()
-    res = _claude_json(f"""Você é o copywriter da 4Unik (Time 4Unik). Crie UM template de email comercial.
+    res = _ai_json(f"""Você é o copywriter da 4Unik (Time 4Unik). Crie UM template de email comercial.
 Devolva SOMENTE JSON válido, sem markdown:
 {{"nome": "nome curto do template", "assunto": "...", "preheader": "...",
  "cta": "rótulo do botão", "cta_url": "url do CTA (Calendly/WhatsApp do contexto, ou vazio)",
@@ -271,7 +318,7 @@ NOSSO ÚLTIMO E-MAIL (resumo): {(historico or '')[:1200]}
 RESPOSTA DO LEAD:
 {(resposta or '')[:3000]}"""
     try:
-        return _claude_json(prompt)
+        return _ai_json(prompt, tier="flash")
     except Exception:
         return None
 
@@ -441,7 +488,7 @@ def _plano_campanha(objetivo, n_emails, tipo, cadencia, kb, brief, temperatura="
     """1ª chamada (leve): só o esqueleto — nome, resumo e o ângulo de cada email. Rápida."""
     tipo_desc = "os emails se repetem em ciclo contínuo" if tipo == "infinita" else "sequência única"
     estrategia = _estrategia_bloco(temperatura)
-    return _claude_json(f"""Você é o estrategista de email marketing da 4Unik (Time 4Unik).
+    return _ai_json(f"""Você é o estrategista de email marketing da 4Unik (Time 4Unik).
 PLANEJE (NÃO escreva os emails ainda) uma campanha de {n_emails} emails. Tipo: {tipo} ({tipo_desc}). {cadencia}.
 Distribua a mensagem do início ao fim, em ordem estratégica, SEM repetir ângulos entre os emails.
 Siga o ESQUELETO DE CADÊNCIA da estratégia do segmento abaixo, adaptando-o ao nº de emails.
@@ -467,7 +514,7 @@ OBJETIVO DA CAMPANHA: {objetivo}""", timeout=180)
 
 def _gerar_email(objetivo, e, todos_angulos, ordem, n, kb, imgs, brief, estrategia):
     """2ª..N+1ª chamadas (uma por email): escreve UM email completo. Cada uma pequena/rápida."""
-    return _claude_json(f"""Você é o copywriter da 4Unik (Time 4Unik). Escreva O EMAIL {ordem} DE {n} de uma campanha.
+    return _ai_json(f"""Você é o copywriter da 4Unik (Time 4Unik). Escreva O EMAIL {ordem} DE {n} de uma campanha.
 Devolva SOMENTE JSON válido, sem markdown:
 {{"assunto": "assunto principal",
  "assuntos_alternativos": ["variante com abordagem de CURIOSIDADE",
@@ -511,7 +558,7 @@ def _revisar_email(email_json, estrategia, brief):
     clareza; pode reescrever assunto/preheader/cta e ajustar o texto. Uma chamada por email.
     Qualquer falha (exceção, JSON incompleto) devolve o email original — nunca quebra o build."""
     try:
-        rev = _claude_json(f"""Você é o editor-chefe de email marketing da 4Unik (Time 4Unik).
+        rev = _ai_json(f"""Você é o editor-chefe de email marketing da 4Unik (Time 4Unik).
 Revise o email abaixo como um editor exigente. Avalie:
 1. GANCHO: o assunto e a primeira linha param o scroll? São específicos, não genéricos?
 2. FUNIL/SEGMENTO: a copy respeita a estratégia do segmento abaixo (pressão de CTA, tom, baits)?
@@ -757,7 +804,7 @@ def _analise_campanha(cid):
 def _reescrever_email(objetivo, atual, diretrizes, analise, ordem, n, kb, imgs, brief,
                       estrategia, angulos):
     """Uma chamada por e-mail: reescreve a versão atual seguindo as novas diretrizes."""
-    return _claude_json(f"""Você é o copywriter da 4Unik (Time 4Unik). REESCREVA o e-mail {ordem} de {n}
+    return _ai_json(f"""Você é o copywriter da 4Unik (Time 4Unik). REESCREVA o e-mail {ordem} de {n}
 de uma campanha existente. As NOVAS DIRETRIZES abaixo têm PRIORIDADE MÁXIMA — elas vieram do dono da
 campanha após analisar a versão atual. Mantenha o que funciona; mude o que as diretrizes pedirem.
 Devolva SOMENTE JSON válido, sem markdown:
@@ -995,7 +1042,7 @@ def gerar_briefing_ads(campanha, steps):
     kb, _ = contexto()
     slug = campanha.get("slug") or db.slugify(campanha.get("nome", "")) or f"c{campanha.get('id')}"
     emails = "\n".join(f"- etapa {s.get('ordem')}: {s.get('template_ref')}" for s in steps) or "—"
-    res = _claude_json(f"""Você é o gestor de tráfego da 4Unik. Crie um briefing de campanha
+    res = _ai_json(f"""Você é o gestor de tráfego da 4Unik. Crie um briefing de campanha
 Google Ads (rede de pesquisa, anúncio responsivo RSA) que espelhe a campanha de email abaixo,
 para o mesmo público e objetivo. Devolva SOMENTE JSON válido, sem markdown:
 {{"campaign_name": "{slug}",
@@ -1096,7 +1143,7 @@ def gerar_briefing_lancamento(cid):
                         for i, e in enumerate(plano, start=1)) or "—"
     seq = "\n".join(f"- E{s['ordem']} “{s['nome']}” — assunto: “{s['assunto']}”"
                     for s in steps) or "—"
-    res = _claude_json(f"""Você é o estrategista GTM e editor-chefe da 4Unik (Time 4Unik).
+    res = _ai_json(f"""Você é o estrategista GTM e editor-chefe da 4Unik (Time 4Unik).
 Escreva o BRIEFING DE LANÇAMENTO desta campanha de email já gerada: os PORQUÊS que permitem
 à 4Unik decidir se ativa ou não. Seja honesto: aponte riscos e fraquezas reais; a recomendação
 "nao_lancar" ou "ajustar" é tão válida quanto "lancar". Toda prova citada deve indicar de QUAL
@@ -1209,7 +1256,7 @@ _FORMATO_PORTFOLIO = """{"campanhas": [{
 def _portfolio_estrategista(kb, brief, max_campanhas, feedback=""):
     extra = (f"\nFEEDBACK DO COPYWRITER NA RODADA ANTERIOR (corrija tudo que foi apontado):\n{feedback}"
              if feedback else "")
-    return _claude_json(f"""Você é o estrategista GTM da 4Unik (Time 4Unik), operando o skill
+    return _ai_json(f"""Você é o estrategista GTM da 4Unik (Time 4Unik), operando o skill
 "GTM Engineer & Growth Specialist" (os KBs com prefixo 0-skill são os mds originais do skill:
 trate-os como fonte de verdade de posicionamento, provas, planos e ICPs).
 PROPONHA um portfólio de até {max_campanhas} campanhas de email DISTINTAS entre si — cada uma
@@ -1238,7 +1285,7 @@ def _portfolio_critica(portfolio, kb, brief):
     refinado com 'aprovado' por campanha + 'aprovado_geral'. Falha nunca quebra o
     loop: devolve None e o chamador mantém a proposta original."""
     try:
-        rev = _claude_json(f"""Você é o copywriter e editor-chefe da 4Unik (Time 4Unik).
+        rev = _ai_json(f"""Você é o copywriter e editor-chefe da 4Unik (Time 4Unik).
 Critique o portfólio de campanhas abaixo como um editor exigente:
 1. ÂNGULOS: há campanhas repetindo gancho/ICP? Cada uma tem dor operacional concreta?
 2. EVIDÊNCIA: toda prova está nos KBs ou rotulada como hipótese? Nada inventado?
