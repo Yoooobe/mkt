@@ -24,6 +24,13 @@ def shell(preheader, inner, cta_label, cta_url=DEMO, assinatura=None, unsubscrib
                f'Fale com a 4Unik: <a href="{WA}" style="color:#66e3c4;text-decoration:underline">'
                f'WhatsApp {WHATSAPP_NUMBER}</a> &nbsp;·&nbsp; '
                f'<a href="{MAIL}" style="color:#66e3c4;text-decoration:underline">{COMMERCIAL_EMAIL}</a></p>')
+    # cta_label vazio = sem botão da moldura (o miolo já traz o próprio CTA;
+    # evita dois botões iguais no mesmo e-mail).
+    btn = (f'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:28px auto 8px"><tr>'
+           f'<td style="border-radius:10px;background-color:#66e3c4">'
+           f'<a href="{cta_url}" style="display:inline-block;padding:14px 34px;font-family:Montserrat,Arial,sans-serif;'
+           f'font-size:15px;font-weight:700;color:#0f1720;text-decoration:none">{cta_label}</a>'
+           f'</td></tr></table>') if (cta_label or "").strip() else ""
     return f"""<!DOCTYPE html><html><body style="margin:0;padding:0;background-color:#eef2f4">
 <div style="display:none;max-height:0;overflow:hidden">{preheader}</div>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#eef2f4">
@@ -35,10 +42,7 @@ def shell(preheader, inner, cta_label, cta_url=DEMO, assinatura=None, unsubscrib
 </td></tr>
 <tr><td style="background-color:#ffffff;padding:36px;font-family:'DM Sans',Arial,sans-serif;font-size:15px;color:#18242f;line-height:1.6">
 {inner}
-<table role="presentation" cellpadding="0" cellspacing="0" style="margin:28px auto 8px"><tr>
-<td style="border-radius:10px;background-color:#66e3c4">
-<a href="{cta_url}" style="display:inline-block;padding:14px 34px;font-family:Montserrat,Arial,sans-serif;font-size:15px;font-weight:700;color:#0f1720;text-decoration:none">{cta_label}</a>
-</td></tr></table>
+{btn}
 </td></tr>
 <tr><td style="background-color:#101820;border-radius:0 0 14px 14px;padding:24px 36px;font-family:'DM Sans',Arial,sans-serif">
 <p style="margin:0 0 14px;font-size:12px;color:#aebdca">Gamificacao, carteiras, loja corporativa, API e fulfillment em uma unica stack.</p>

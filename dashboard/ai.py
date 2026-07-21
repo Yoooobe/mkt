@@ -201,6 +201,13 @@ DADOS ATUAIS DO CRM:
 GUIA_HTML = """REGRAS DO HTML (inner_html = só o miolo; a moldura oficial shell() é aplicada pelo sistema):
 - Estilo inline Gmail-safe, identidade 4Unik: títulos <h1 style="margin:0 0 18px;font-family:Montserrat,Arial,sans-serif;font-size:22px;font-weight:800;color:#0f1720;line-height:1.3"> com spans de destaque color:#1fbf9c; parágrafos <p style="margin:0 0 16px">.
 - Cards: <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0"><tr><td style="border-left:4px solid COR;background-color:#f6f8f9;border-radius:0 10px 10px 0;padding:16px 20px">…</td></tr></table> (COR: #1fbf9c padrão, #66e3c4 benefício, #f2c94c oferta, #ef7d7d dor).
+- REGRA DO CTA (obrigatória): NUNCA coloque botão no inner_html — nenhuma âncora estilizada
+  como botão (display:inline-block, background, padding). O SISTEMA renderiza o ÚNICO botão
+  oficial ao final do e-mail usando os campos "cta" (rótulo) e "cta_url". No corpo, refira-se
+  ao CTA apenas em texto corrido.
+- Se quiser um 2º caminho de conversão no corpo, ele deve ser DIFERENTE do CTA do botão
+  (ex.: botão agenda demo; texto pede "responda este e-mail com X"). JAMAIS repita o mesmo
+  pedido/rótulo duas vezes no mesmo e-mail.
 - Variáveis disponíveis: {{nome}}, {{empresa}}, {{cargo}}, {{porte}}, {{erp}}, {{modulo}}, {{data_proposta}}, {{validade}}, {{mensalidade}}.
 - Se citar uma imagem do contexto, use <img src="cid-imagem:NOME_DO_ARQUIVO"> para revisao antes de publicar.
 - Canais oficiais de retorno: WhatsApp +55 11 2684-4724 (https://wa.me/551126844724) e comercial@4unik.com.br. A moldura já os inclui no rodapé.
@@ -508,7 +515,11 @@ def _revisar_email(email_json, estrategia, brief):
 Revise o email abaixo como um editor exigente. Avalie:
 1. GANCHO: o assunto e a primeira linha param o scroll? São específicos, não genéricos?
 2. FUNIL/SEGMENTO: a copy respeita a estratégia do segmento abaixo (pressão de CTA, tom, baits)?
-3. CTA: único, coerente com a etapa, rótulo acionável?
+3. CTA: único, coerente com a etapa, rótulo acionável? O botão oficial é renderizado pelo
+   SISTEMA (campos cta/cta_url): se o inner_html contiver QUALQUER botão (âncora com
+   display:inline-block/background/padding), REMOVA-O do inner_html — senão o e-mail sai com
+   dois botões repetidos. Se houver um 2º pedido de ação no corpo, ele deve ser DIFERENTE do
+   CTA do botão (nunca o mesmo pedido/rótulo duas vezes).
 4. CLAREZA: frases curtas, sem jargão vazio, benefício concreto?
 Reescreva o que estiver fraco (assunto, assuntos_alternativos, preheader, cta e ajustes no texto).
 Se já estiver forte, devolva-o como está. NÃO acrescente fatos, preços, cases ou números novos;

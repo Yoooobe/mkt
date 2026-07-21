@@ -280,13 +280,22 @@ def _unsub_url(email, cid=None):
     return f"{TRACK_BASE}/unsubscribe?token={tok}"
 
 
+def _inner_tem_botao(inner):
+    """True quando o miolo já traz o próprio botão de CTA (âncora estilizada como botão).
+    Nesse caso a moldura NÃO deve repetir o botão — era isso que gerava dois CTAs
+    idênticos no mesmo e-mail (um no corpo, outro da shell())."""
+    return bool(re.search(r"<a\b[^>]*display\s*:\s*inline-block", inner or "", re.I))
+
+
 def render_html(ref, contato=None, sender=None, cid=None):
     t = template_get(ref)
     if not t:
         return None, None
     assinatura = (sender or {}).get("signature_url") or None
     unsub = _unsub_url((contato or {}).get("email", ""), cid)
-    html = email_templates.shell(t["preheader"], t["inner_html"], t["cta"],
+    # dedup de CTA: se o corpo já tem botão, a moldura não adiciona o dela
+    cta_label = "" if _inner_tem_botao(t["inner_html"]) else t["cta"]
+    html = email_templates.shell(t["preheader"], t["inner_html"], cta_label,
                                  t.get("cta_url") or email_templates.WA, assinatura, unsub)
     return render_vars(t["assunto"], contato), render_vars(html, contato)
 
