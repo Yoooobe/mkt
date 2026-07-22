@@ -647,11 +647,14 @@ def _gerar_loop(cid, objetivo, emails, cad_min, kb, imgs, brief, temperatura="")
             alts = []
         alts_json = json.dumps([str(a) for a in alts[:2]], ensure_ascii=False)
         c = db.conn()
-        c.execute("""INSERT INTO templates_ai(nome,assunto,preheader,cta,cta_url,inner_html,texto_plano,status,origem,assuntos_alt)
-                     VALUES(?,?,?,?,?,?,?,'pendente','ia',?)""",
+        versao = c.execute("SELECT versao FROM campaigns WHERE id=?", (cid,)).fetchone()
+        vcamp = int((versao["versao"] if versao else None) or 1)
+        c.execute("""INSERT INTO templates_ai(nome,assunto,preheader,cta,cta_url,inner_html,texto_plano,
+                                              status,origem,assuntos_alt,campaign_id,versao_campanha)
+                     VALUES(?,?,?,?,?,?,?,'pendente','ia',?,?,?)""",
                   (e.get("nome", f"Email {i}"), full.get("assunto", ""), full.get("preheader", ""),
                    full.get("cta", ""), full.get("cta_url", ""), full.get("inner_html", ""),
-                   full.get("texto_plano", ""), alts_json))
+                   full.get("texto_plano", ""), alts_json, cid, vcamp))
         tid = c.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
         offset = e.get("offset_dias") if cad_min is None else None
         c.execute("INSERT INTO campaign_steps(campaign_id,ordem,template_ref,offset_dias) VALUES(?,?,?,?)",
@@ -694,7 +697,7 @@ def _build_worker(cid, objetivo, tipo, n_emails, cad_min, cad_max, kb, imgs, bri
             raise RuntimeError("a IA não devolveu o plano de emails")
         c = db.conn()
         insight = plano.get("insight_gtm") or {}
-        contexto = " · ".join(x for x in (
+        contexto = "\n\n".join(x for x in (
             plano.get("resumo", ""),
             f"ICP: {insight.get('icp', '')}" if insight.get("icp") else "",
             f"Gancho: {insight.get('gancho', '')}" if insight.get("gancho") else "",
@@ -702,8 +705,11 @@ def _build_worker(cid, objetivo, tipo, n_emails, cad_min, cad_max, kb, imgs, bri
             f"GA4: {insight.get('evento_ga4', '')}" if insight.get("evento_ga4") else "",
             f"Segmento: {temperatura}" if temperatura else "",
         ) if x)
-        c.execute("UPDATE campaigns SET nome=?, contexto=? WHERE id=?",
-                  (plano.get("nome") or f"Campanha — {objetivo[:40]}", contexto, cid))
+        c.execute("""UPDATE campaigns SET nome=?, contexto=?,
+                            atualizada_em=COALESCE(NULLIF(atualizada_em,''), ?)
+                     WHERE id=?""",
+                  (plano.get("nome") or f"Campanha — {objetivo[:40]}", contexto,
+                   db.now(), cid))
         c.commit()
         c.close()
         # persiste o plano (ângulos) p/ uma retomada futura ser exata (sem replanejar)
@@ -886,6 +892,11 @@ def _rewrite_worker(cid, diretrizes, ordens):
         angulos = "; ".join(f"{s['ordem']}) {s['nome'] or ''}: assunto atual “{s['assunto'] or ''}”"
                             for s in steps)
         feitos = 0
+        templates_novos = []
+        # bump de versão ANTES de gravar os novos templates (eles herdam a versão nova)
+        nova_versao = db.campaign_bump_versao(
+            cid, diretrizes=diretrizes, ordens=[s["ordem"] for s in alvo], origem="rewrite")
+        _log_progress(cid, f"campanha agora na versão {nova_versao}")
         for s in alvo:
             if _geracao_cancelada(cid):
                 return
@@ -908,24 +919,46 @@ def _rewrite_worker(cid, diretrizes, ordens):
             alts = novo.get("assuntos_alternativos")
             alts = alts if isinstance(alts, list) else []
             alts_json = json.dumps([str(a) for a in alts[:2]], ensure_ascii=False)
+            antigo_id = None
+            ref = s["template_ref"] or ""
+            if ref.startswith("ai:"):
+                try:
+                    antigo_id = int(ref.split(":", 1)[1])
+                except ValueError:
+                    antigo_id = None
             c = db.conn()
             c.execute("""INSERT INTO templates_ai(nome,assunto,preheader,cta,cta_url,inner_html,
-                                                  texto_plano,status,origem,assuntos_alt)
-                         VALUES(?,?,?,?,?,?,?,'pendente','ia',?)""",
+                                                  texto_plano,status,origem,assuntos_alt,
+                                                  campaign_id,versao_campanha)
+                         VALUES(?,?,?,?,?,?,?,'pendente','ia',?,?,?)""",
                       (s["nome"] or f"Email {s['ordem']}", novo.get("assunto", ""),
                        novo.get("preheader", ""), novo.get("cta", ""), novo.get("cta_url", ""),
-                       novo.get("inner_html", ""), novo.get("texto_plano", ""), alts_json))
+                       novo.get("inner_html", ""), novo.get("texto_plano", ""), alts_json,
+                       cid, nova_versao))
             tid = c.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
+            if antigo_id:
+                c.execute("UPDATE templates_ai SET substituido_por=? WHERE id=?",
+                          (tid, antigo_id))
             c.execute("UPDATE campaign_steps SET template_ref=? WHERE campaign_id=? AND ordem=?",
                       (f"ai:{tid}", cid, s["ordem"]))
             c.commit()
             c.close()
+            templates_novos.append({"ordem": s["ordem"], "template_id": tid,
+                                    "antigo_id": antigo_id})
             feitos += 1
             dur = ((build_progress(cid) or {}).get("duracoes_s") or [])[-19:]
             dur.append(round(time.time() - t0, 1))
             _set_progress(cid, feitos=feitos, duracoes_s=dur)
             _log_progress(cid, f"e-mail {s['ordem']} reescrito — assunto: "
                                f"“{novo.get('assunto', '')}” (antes: “{s['assunto'] or ''}”)")
+        # completa o log da versão com os ids gerados
+        try:
+            log = json.loads(db.meta_get(f"rewrite_log_{cid}", "[]") or "[]")
+            if isinstance(log, list) and log and log[-1].get("versao") == nova_versao:
+                log[-1]["templates_novos"] = templates_novos
+                db.meta_set(f"rewrite_log_{cid}", json.dumps(log[-40:], ensure_ascii=False))
+        except Exception:
+            pass
         _set_progress(cid, etapa="atualizando o briefing de lançamento…")
         try:                                   # best-effort: falha não bloqueia a reescrita
             gerar_briefing_lancamento(cid)
@@ -933,9 +966,9 @@ def _rewrite_worker(cid, diretrizes, ordens):
         except Exception as ex:
             print(f"[reescrita campanha {cid}] briefing falhou (gere manualmente): {ex}", flush=True)
         _set_progress(cid, status="pronto",
-                      etapa="reescrita concluída — revise e aprove os novos e-mails")
-        _log_progress(cid, "reescrita concluída — os novos e-mails nasceram PENDENTES; "
-                           "as versões antigas ficaram guardadas como histórico")
+                      etapa=f"reescrita concluída (v{nova_versao}) — revise e aprove os novos e-mails")
+        _log_progress(cid, f"reescrita concluída — campanha v{nova_versao}; novos e-mails "
+                           "PENDENTES; versões antigas guardadas como histórico")
     except Exception as ex:
         _set_progress(cid, status="erro", erro=str(ex)[:300], erro_tipo=_tipo_erro(str(ex)))
         print(f"[reescrita campanha {cid}] ERRO: {ex}", flush=True)
@@ -1147,11 +1180,15 @@ def gerar_briefing_lancamento(cid):
 Escreva o BRIEFING DE LANÇAMENTO desta campanha de email já gerada: os PORQUÊS que permitem
 à 4Unik decidir se ativa ou não. Seja honesto: aponte riscos e fraquezas reais; a recomendação
 "nao_lancar" ou "ajustar" é tão válida quanto "lancar". Toda prova citada deve indicar de QUAL
-KB veio; se não estiver nos KBs, rotule como hipótese. Devolva SOMENTE JSON válido, sem markdown:
-{{"resumo": "a campanha em 2-3 frases",
+KB veio; se não estiver nos KBs, rotule como hipótese.
+FORMATAÇÃO: use frases curtas e separe parágrafos com \\n\\n nos campos de prosa (resumo,
+icp_e_dor, por_que_agora, porque_este_angulo, prova_e_origem, justificativa).
+Devolva SOMENTE JSON válido, sem markdown:
+{{"resumo": "a campanha em 2-3 frases (parágrafos com \\\\n\\\\n)",
  "icp_e_dor": "quem é o alvo e qual dor operacional concreta esta campanha ataca",
  "por_que_agora": "por que faz sentido para ESTE cohort neste momento (use os dados do cohort)",
- "por_email": [{{"ordem": 1, "porque_este_angulo": "por que este ângulo nesta posição da cadência",
+ "por_email": [{{"ordem": 1, "assunto_esperado": "assunto real ou esperado deste e-mail",
+   "porque_este_angulo": "por que este ângulo nesta posição da cadência",
    "prova_e_origem": "prova usada e KB de origem, ou 'hipótese rotulada: …'"}}],
  "riscos": ["risco concreto e por quê (ex.: base fria grande, cohort sem histórico, prova fraca)"],
  "medicao": {{"utm_campaign": "slug", "evento_ga4": "evento esperado",

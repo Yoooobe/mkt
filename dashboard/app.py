@@ -17,13 +17,14 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 
 from fastapi import FastAPI, File, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import ai
 import db
 import engine
+import export_campanha
 import ga4
 import nomes
 import seed
@@ -1108,14 +1109,49 @@ def campaign_step_make_editable(cid: int, ordem: int):
 
 # ---------------- campanhas ----------------
 
+def _compat_status(camp_versao, t):
+    """compatível | pendente_aprovacao | desatualizado | risco_cta | desconhecido."""
+    if not t:
+        return "desconhecido"
+    status = (t.get("status") or "").lower()
+    v_tpl = t.get("versao_campanha")
+    try:
+        v_tpl = int(v_tpl) if v_tpl is not None else None
+    except (TypeError, ValueError):
+        v_tpl = None
+    risco = bool(engine._inner_tem_botao(t.get("inner_html") or ""))
+    if risco:
+        return "risco_cta"
+    if v_tpl is not None and v_tpl < int(camp_versao or 1):
+        return "desatualizado"
+    if status == "aprovado":
+        return "compativel"
+    if status == "pendente":
+        return "pendente_aprovacao"
+    return "desconhecido"
+
+
 def _campaign_payload(c, camp):
+    camp_versao = int(camp["versao"] or 1) if "versao" in camp.keys() else 1
     steps = []
     for s in c.execute("SELECT * FROM campaign_steps WHERE campaign_id=? ORDER BY ordem",
                        (camp["id"],)).fetchall():
         t = engine.template_get(s["template_ref"]) or {}
+        alts = []
+        raw_alts = t.get("assuntos_alt") or ""
+        if raw_alts:
+            try:
+                alts = json.loads(raw_alts) if isinstance(raw_alts, str) else list(raw_alts)
+            except Exception:
+                alts = []
+        compat = _compat_status(camp_versao, t)
         steps.append({"ordem": s["ordem"], "template_ref": s["template_ref"],
                       "offset_dias": s["offset_dias"], "nome": t.get("nome", "?"),
-                      "assunto": t.get("assunto", ""), "status_template": t.get("status", "?")})
+                      "assunto": t.get("assunto", ""), "assuntos_alt": alts,
+                      "status_template": t.get("status", "?"),
+                      "versao_template": t.get("versao_campanha"),
+                      "compativel": compat == "compativel",
+                      "compat_status": compat})
     stats = {r["status"]: r["n"] for r in c.execute(
         """SELECT status, COUNT(*) AS n FROM campaign_contacts WHERE campaign_id=?
            GROUP BY status""", (camp["id"],)).fetchall()}
@@ -1147,8 +1183,15 @@ def _campaign_payload(c, camp):
            ORDER BY next_send_at LIMIT 10""", (camp["id"],)).fetchall()]
     d = dict(camp)
     sender = db.sender_get(camp["sender_id"] or 1) or db.sender_default() or {}
+    n_comp = sum(1 for s in steps if s.get("compativel"))
     d.update({"steps": steps, "contatos_por_status": stats, "contatos_por_etapa": etapas,
               "total_contatos": sum(stats.values()), "enviados": enviados,
+              "versao": camp_versao,
+              "atualizada_em": (camp["atualizada_em"] if "atualizada_em" in camp.keys() else "") or "",
+              "templates_compativeis": n_comp,
+              "templates_total": len(steps),
+              "rewrite_log": db.rewrite_log_get(camp["id"], limit=8),
+              "export_docx": True,  # atualizado no endpoint /health se preciso; UI testa export
               "metricas": {"enviados": enviados, "abertos": abertos, "taxa_abertura": pct(abertos),
                            "cliques": cliques, "taxa_clique": pct(cliques),
                            "respostas": respostas, "taxa_resposta": pct(respostas),
@@ -1166,6 +1209,7 @@ def _campaign_payload(c, camp):
               "proximos_envios": proximos, "build": ai.build_progress(camp["id"]),
               "sender": {"id": sender.get("id"), "email": sender.get("email"),
                          "nome": sender.get("nome"), "proposito": sender.get("proposito")}})
+    d["export_docx"] = bool(export_campanha.HAS_DOCX)
     return d
 
 
@@ -2356,6 +2400,22 @@ def campaign_ads_briefing(cid: int):
     return {"id": cid, "briefing": json.loads(b) if b else None,
             "utm": {"utm_source": "4unik-mail", "utm_medium": "email",
                     "utm_campaign": camp.get("slug") or db.campaign_slug(cid)}}
+
+
+@app.get("/api/campaigns/{cid}/export")
+def campaign_export(cid: int, fmt: str = "md"):
+    """Pacote editorial da campanha (briefing + assuntos + porquês + textos) em md/txt/docx."""
+    try:
+        data, media, filename = export_campanha.exportar(cid, fmt)
+    except ValueError as ex:
+        msg = str(ex)
+        code = 404 if "não encontrada" in msg else 422
+        return JSONResponse({"erro": msg}, status_code=code)
+    except RuntimeError as ex:
+        return JSONResponse({"erro": str(ex), "docx_disponivel": export_campanha.HAS_DOCX},
+                            status_code=501)
+    return Response(content=data, media_type=media,
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 @app.get("/api/campaigns/{cid}/ads-briefing.csv")

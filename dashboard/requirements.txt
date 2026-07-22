@@ -6,3 +6,4 @@ xlrd
 google-auth
 requests
 certifi
+python-docx

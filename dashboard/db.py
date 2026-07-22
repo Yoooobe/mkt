@@ -93,6 +93,9 @@ CREATE TABLE IF NOT EXISTS templates_ai (
   assuntos_alt TEXT DEFAULT '',            -- JSON: variantes de assunto geradas pela IA
   status TEXT DEFAULT 'pendente',          -- pendente | aprovado
   origem TEXT DEFAULT 'ia',                -- ia | seed
+  campaign_id INTEGER,                     -- campanha dona (quando gerado/reescrito por ela)
+  versao_campanha INTEGER,                 -- versão da campanha no momento da geração
+  substituido_por INTEGER,                 -- id do template que substituiu este (histórico)
   criado_em TEXT DEFAULT (datetime('now','localtime'))
 );
 
@@ -108,6 +111,8 @@ CREATE TABLE IF NOT EXISTS campaigns (
   sender_id INTEGER DEFAULT 1,             -- remetente que envia a campanha (senders.id)
   inicio_em TEXT DEFAULT '',               -- data/hora do 1º envio ('' = assim que ativar)
   audience_profile TEXT DEFAULT '',        -- segmento inteligente usado na seleção da audiência
+  versao INTEGER DEFAULT 1,                -- sobe a cada reescrita / regeneração relevante
+  atualizada_em TEXT DEFAULT '',           -- última bump de versão (localtime)
   criada_em TEXT DEFAULT (datetime('now','localtime'))
 );
 
@@ -289,6 +294,32 @@ def init():
     if "assuntos_alt" not in tcols:
         # variantes de assunto (JSON list) geradas pelo copywriter para teste de gancho
         c.execute("ALTER TABLE templates_ai ADD COLUMN assuntos_alt TEXT DEFAULT ''")
+    if "versao" not in pcols:
+        c.execute("ALTER TABLE campaigns ADD COLUMN versao INTEGER DEFAULT 1")
+    if "atualizada_em" not in pcols:
+        c.execute("ALTER TABLE campaigns ADD COLUMN atualizada_em TEXT DEFAULT ''")
+    for col, typ in (("campaign_id", "INTEGER"), ("versao_campanha", "INTEGER"),
+                     ("substituido_por", "INTEGER")):
+        if col not in tcols:
+            c.execute(f"ALTER TABLE templates_ai ADD COLUMN {col} {typ}")
+    # backfill: campanhas sem timestamp de atualização usam criada_em; templates
+    # apontados pelos steps herdam campaign_id + versão atual da campanha.
+    c.execute("""UPDATE campaigns SET atualizada_em=criada_em
+                 WHERE (atualizada_em IS NULL OR atualizada_em='')
+                   AND criada_em IS NOT NULL AND criada_em!=''""")
+    c.execute("""UPDATE campaigns SET versao=1 WHERE versao IS NULL OR versao<1""")
+    for row in c.execute("""SELECT cs.campaign_id, cs.template_ref, cp.versao
+                            FROM campaign_steps cs
+                            JOIN campaigns cp ON cp.id=cs.campaign_id
+                            WHERE cs.template_ref LIKE 'ai:%'""").fetchall():
+        try:
+            tid = int(str(row["template_ref"]).split(":", 1)[1])
+        except (ValueError, IndexError):
+            continue
+        c.execute("""UPDATE templates_ai
+                     SET campaign_id=COALESCE(campaign_id, ?),
+                         versao_campanha=COALESCE(versao_campanha, ?)
+                     WHERE id=?""", (row["campaign_id"], row["versao"] or 1, tid))
     c.commit()
     c.close()
 
@@ -442,6 +473,48 @@ def meta_set(key, value):
               "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
     c.commit()
     c.close()
+
+
+def rewrite_log_get(cid, limit=10):
+    """Histórico de reescritas/regenerações da campanha (mais recente primeiro)."""
+    raw = meta_get(f"rewrite_log_{cid}", "[]")
+    try:
+        log = json.loads(raw) if raw else []
+    except Exception:
+        log = []
+    if not isinstance(log, list):
+        log = []
+    return list(reversed(log[-limit:]))
+
+
+def campaign_bump_versao(cid, diretrizes="", ordens=None, templates_novos=None, origem="rewrite"):
+    """Incrementa campaigns.versao, atualiza atualizada_em e anexa entrada ao rewrite_log.
+
+    Retorna a nova versão. Aceita conexão própria (thread-safe para workers)."""
+    c = conn()
+    row = c.execute("SELECT versao FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if not row:
+        c.close()
+        raise ValueError("campanha não encontrada")
+    nova = int(row["versao"] or 1) + 1
+    quando = now()
+    c.execute("UPDATE campaigns SET versao=?, atualizada_em=? WHERE id=?",
+              (nova, quando, cid))
+    c.commit()
+    c.close()
+    entrada = {"versao": nova, "em": quando, "origem": origem,
+               "diretrizes": (diretrizes or "")[:500],
+               "ordens": list(ordens or []),
+               "templates_novos": list(templates_novos or [])}
+    try:
+        log = json.loads(meta_get(f"rewrite_log_{cid}", "[]") or "[]")
+    except Exception:
+        log = []
+    if not isinstance(log, list):
+        log = []
+    log.append(entrada)
+    meta_set(f"rewrite_log_{cid}", json.dumps(log[-40:], ensure_ascii=False))
+    return nova
 
 
 def funil(contato):

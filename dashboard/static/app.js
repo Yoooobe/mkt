@@ -21,6 +21,29 @@ function toast(msg, ms = 3500) {
 }
 const badge = (v, cls) => `<span class="badge b-${(cls || v || "").toLowerCase().replace(/[^a-z_]/g, "")}">${esc(v)}</span>`;
 const fmtDt = s => s ? esc(s.slice(0, 16)) : "—";
+
+/** Quebra prosa da IA em parágrafos legíveis (escapa HTML). */
+function fmtProsa(texto) {
+  let t = String(texto || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n").trim();
+  if (!t) return '<p class="ai-prosa muted">—</p>';
+  // " · " legado do contexto flatten → quebra de parágrafo
+  t = t.replace(/\s·\s/g, "\n\n");
+  let parts = t.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+  if (parts.length === 1 && parts[0].length > 220 && !parts[0].includes("\n")) {
+    // texto corrido longo: quebra após pontuação forte
+    parts = parts[0].split(/(?<=[.!?…])\s+(?=[A-ZÁÉÍÓÚÂÊÔÃÕÀÜ0-9“"])/).map(p => p.trim()).filter(Boolean);
+  }
+  return parts.map(p => `<p class="ai-prosa">${esc(p.replace(/\n/g, " "))}</p>`).join("");
+}
+
+const COMPAT_LABEL = {
+  compativel: "compatível",
+  pendente_aprovacao: "pendente de aprovação",
+  desatualizado: "desatualizado",
+  risco_cta: "risco: CTA duplicado no corpo",
+  desconhecido: "—",
+};
+const compatBadge = st => badge(COMPAT_LABEL[st] || st || "—", st || "desconhecido");
 // Os envios rodam num ciclo de ~30 min, então a hora real é "a partir de" o agendado.
 // Se já venceu, o e-mail sai no próximo ciclo (não num minuto exato).
 function envioLabel(dtStr) {
@@ -493,14 +516,15 @@ function renderBuildPanel(b) {
       const ord = i + 1;
       const ico = ord <= feitos ? "✅" : (ord === feitos + 1 ? "✍️" : "⏳");
       return `<div style="margin-top:4px">${ico} <b>E${ord} ${esc(e.nome || "")}</b>
-        <small class="muted">— ${esc(e.angulo || "")}</small></div>`;
+        <div class="muted" style="margin-left:22px">${fmtProsa(e.angulo || "")}</div></div>`;
     }).join("")}</div>` : ""}
     ${log.length ? `<details style="margin-top:10px" ${logRaciocinioAberto ? "open" : ""}
         ontoggle="logRaciocinioAberto=this.open">
       <summary style="cursor:pointer"><b>🧩 Raciocínio da IA</b> <small class="muted">(${log.length} passos — o que está sendo considerado)</small></summary>
       <div style="max-height:240px;overflow:auto;margin-top:6px;padding:8px;background:#fff;border-radius:8px">
-        ${log.slice().reverse().map(l => `<div style="margin-bottom:4px">
-          <small class="muted">${esc((l.ts || "").slice(11, 16))}</small> ${esc(l.msg || "")}</div>`).join("")}
+        ${log.slice().reverse().map(l => `<div style="margin-bottom:8px">
+          <small class="muted">${esc((l.ts || "").slice(11, 16))}</small>
+          ${fmtProsa(l.msg || "")}</div>`).join("")}
       </div></details>` : ""}
     <div style="margin-top:8px"><small class="muted">Pode deixar a aba aberta; a tela atualiza sozinha. Ao final a IA escreve o briefing de lançamento para você decidir se ativa.</small></div>
   </div>`;
@@ -508,6 +532,7 @@ function renderBuildPanel(b) {
 
 async function vCampanha(id) {
   const c = await api("/api/campaigns/" + id);
+  window._campanhaAtual = c;
   const gerando = c.build && c.build.status === "gerando";
   const erroBuild = c.build && c.build.status === "erro";
   const podeAtivar = !gerando && c.steps.length > 0 && c.steps.every(s => s.status_template === "aprovado");
@@ -519,10 +544,20 @@ async function vCampanha(id) {
            <button class="green" style="margin-top:8px" onclick="campRetomar(${c.id})">🔄 Retomar Criação</button></div>`
         : `<div style="margin-top:6px"><small class="muted">Os e-mails já gerados ficaram salvos. Você pode excluir e tentar de novo.</small></div>`}</div>`
     : "";
+  const versaoChip = `<span class="versao-chip" title="Versão sobe a cada reescrita dos e-mails">v${c.versao || 1}${c.atualizada_em ? ` · atualizada ${fmtDt(c.atualizada_em)}` : ""}</span>
+    <span class="versao-chip" title="Compatível = mesma versão da campanha e template aprovado">${c.templates_compativeis || 0}/${c.templates_total || c.steps.length} templates compatíveis</span>`;
+  const exportBtns = c.steps.length ? `
+      <button onclick="baixarCampanha(${c.id},'md')">⬇ .md</button>
+      <button onclick="baixarCampanha(${c.id},'txt')">⬇ .txt</button>
+      ${c.export_docx !== false ? `<button onclick="baixarCampanha(${c.id},'docx')">⬇ Word</button>` : ""}` : "";
+  const hist = (c.rewrite_log || []).length ? `<details style="margin-top:10px"><summary style="cursor:pointer"><b>Histórico de versões</b></summary>
+      <ul style="margin:8px 0 0;padding-left:18px">${c.rewrite_log.map(r =>
+        `<li><b>v${r.versao}</b> · ${fmtDt(r.em)} · ${esc(r.origem || "")}
+         ${r.diretrizes ? `<div class="muted">${fmtProsa(r.diretrizes)}</div>` : ""}</li>`).join("")}</ul></details>` : "";
   view.innerHTML = `
     <div class="toolbar">
       <a href="#/campanhas">← Campanhas</a>
-      <h2 style="margin:0">${esc(c.nome)}</h2> ${badge(c.status)} ${badge(c.tipo, "pendente")}
+      <h2 style="margin:0">${esc(c.nome)}</h2> ${badge(c.status)} ${badge(c.tipo, "pendente")} ${versaoChip}
       <span class="sp"></span>
       ${c.status === "ativa"
         ? `<button class="warn" onclick="campAction(${c.id},'pause')">⏸ Pausar campanha</button>`
@@ -532,14 +567,17 @@ async function vCampanha(id) {
       <button onclick="dlgReescrever(${c.id})" ${gerando || c.status === "ativa" || !c.steps.length
         ? `disabled title='${gerando ? "aguarde a geração terminar" : c.status === "ativa" ? "pause a campanha antes de reescrever" : "a campanha ainda não tem e-mails"}'` : ""}>🔁 Reescrever e-mails</button>
       <button onclick="campTeste(${c.id})" ${c.steps.length ? "" : "disabled"}>📨 Enviar teste</button>
+      ${exportBtns}
       <button class="warn" onclick="campExcluir(${c.id}, ${JSON.stringify(c.nome)})">🗑 Excluir</button>
     </div>
     ${banner}
     <div class="card">
       ${c.sender ? `<div style="margin-bottom:8px"><span class="tag">✉️ ${esc(c.sender.email)}</span> <small class="muted">remetente · ${esc(c.sender.proposito || "")}</small></div>` : ""}
       ${c.inicio_em ? `<div style="margin-bottom:8px">📅 <b>1º envio:</b> ${esc(c.inicio_em)} <small class="muted">(próximos pela cadência)</small></div>` : ""}
-      <b>Objetivo:</b> ${esc(c.objetivo)}<br>
-      <small class="muted">${esc(c.contexto)}</small></div>
+      <b>Objetivo:</b><div style="margin:6px 0 12px">${fmtProsa(c.objetivo)}</div>
+      <b>Planejamento / contexto:</b>
+      <div class="muted" style="margin-top:6px">${fmtProsa(c.contexto)}</div>
+      ${hist}</div>
     <div class="card" id="briefing-card"><h3>🧭 Briefing de lançamento</h3>
       <span class="muted">${gerando ? "será escrito automaticamente ao fim da geração…" : "carregando…"}</span></div>
     ${(() => { const m = c.metricas || {}; return `
@@ -563,11 +601,13 @@ async function vCampanha(id) {
     <div class="row">
       <div class="card grow">
         <h3>Sequência (${c.steps.length} emails)</h3>
-        <table><tr><th>#</th><th>Email</th><th>Cadência</th><th>Template</th><th></th></tr>
+        <table><tr><th>#</th><th>Assunto</th><th>Cadência</th><th>Compatibilidade</th><th></th></tr>
         ${c.steps.map(s => `<tr>
-          <td>${s.ordem}</td><td>${esc(s.nome)}<br><small class="muted">${esc(s.assunto)}</small></td>
+          <td>E${s.ordem}</td>
+          <td><b>${esc(s.nome)}</b><br><small class="muted">${esc(s.assunto)}</small>
+            ${s.versao_template != null ? `<br><small class="muted">template v${s.versao_template}</small>` : ""}</td>
           <td>${s.offset_dias != null ? "D+" + s.offset_dias : `sorteio ${c.cad_min_dias}–${c.cad_max_dias}d`}</td>
-          <td>${badge(s.status_template)}</td>
+          <td>${compatBadge(s.compat_status)} ${badge(s.status_template)}</td>
           <td><button onclick="previewTpl('${s.template_ref}','${esc(c.contatos[0]?.email || "")}','${c.id}',${s.ordem})">👁 Preview / editar</button>
             ${s.status_template !== "aprovado" ? `<button class="green" onclick="aprovarTpl('${s.template_ref}')">✓ Aprovar</button>` : ""}</td>
         </tr>`).join("")}</table>
@@ -597,12 +637,32 @@ async function vCampanha(id) {
     <div class="card" id="ads-briefing-card"><h3>📣 Google Ads (espelho da campanha)</h3>
       <span class="muted">carregando…</span></div>`;
   carregarAdsBriefing(c.id);
-  if (!gerando) carregarBriefing(c.id);
+  if (!gerando) carregarBriefing(c.id, c);
   // enquanto a IA estiver gerando os e-mails, atualiza a tela sozinha
   if (gerando) {
     const myhash = location.hash;
     setTimeout(() => { if (location.hash === myhash) vCampanha(id); }, 3000);
   }
+}
+
+async function baixarCampanha(id, fmt) {
+  try {
+    const resp = await fetch(`/api/campaigns/${id}/export?fmt=${encodeURIComponent(fmt)}`,
+      {headers: {"X-API-Key": window.API_KEY}});
+    if (!resp.ok) {
+      let msg = "falha no download";
+      try { msg = (await resp.json()).erro || msg; } catch (_) {}
+      return toast(msg, 6000);
+    }
+    const blob = await resp.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = (resp.headers.get("Content-Disposition") || "").match(/filename="(.+)"/)?.[1]
+      || `campanha-${id}.${fmt}`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast(`Download ${fmt.toUpperCase()} pronto ✔`, 2500);
+  } catch (e) { toast("Download falhou: " + e.message, 6000); }
 }
 
 /* ---------- briefing de lançamento (os porquês / go-no-go) ---------- */
@@ -612,42 +672,66 @@ const RECOMENDACAO_BRIEFING = {
   nao_lancar: {rot: "⛔ Recomendação: NÃO LANÇAR", cor: "#ff6b6b"},
 };
 
-async function carregarBriefing(id) {
+async function carregarBriefing(id, camp) {
   const box = document.getElementById("briefing-card");
   if (!box) return;
   try {
     const r = await api(`/api/campaigns/${id}/briefing`);
-    box.innerHTML = renderBriefingLancamento(id, r.briefing);
+    box.innerHTML = renderBriefingLancamento(id, r.briefing, camp || window._campanhaAtual);
   } catch (e) {
     box.innerHTML = `<h3>🧭 Briefing de lançamento</h3><p class="form-feedback error">${esc(e.message)}</p>`;
   }
 }
 
-function renderBriefingLancamento(id, b) {
+function renderBriefingLancamento(id, b, camp) {
   const cabecalho = `<h3>🧭 Briefing de lançamento</h3>
-    <p class="muted">Os porquês da campanha — para você decidir se ativa ou não. Recomendação da IA; a decisão final é sua.</p>`;
+    <p class="muted">Os porquês da campanha — separados por assunto. Recomendação da IA; a decisão final é sua.</p>`;
   if (!b) return `${cabecalho}
     <button class="primary" onclick="gerarBriefingLancamento(${id})">✨ Gerar briefing com IA</button>
     <span class="muted"> (também é gerado automaticamente ao fim da criação da campanha)</span>`;
   const rec = RECOMENDACAO_BRIEFING[b.recomendacao] || {rot: "Recomendação: " + (b.recomendacao || "—"), cor: "#a3bac6"};
   const med = b.medicao || {};
+  const steps = (camp && camp.steps) || [];
+  const porMap = {};
+  (b.por_email || []).forEach(e => { porMap[e.ordem] = e; });
+  const ordens = [...new Set([
+    ...steps.map(s => s.ordem),
+    ...(b.por_email || []).map(e => e.ordem),
+  ].filter(x => x != null))].sort((a, b2) => a - b2);
+  const blocosEmail = ordens.map(ord => {
+    const step = steps.find(s => s.ordem === ord) || {};
+    const pe = porMap[ord] || {};
+    const assunto = step.assunto || pe.assunto_esperado || "—";
+    const alts = (step.assuntos_alt || []).length
+      ? `<div class="muted" style="margin-top:4px"><small>Alternativos: ${step.assuntos_alt.map(a => esc(a)).join(" · ")}</small></div>` : "";
+    return `<div class="email-porque">
+      <div class="toolbar" style="margin:0 0 6px">
+        <b>E${ord} — ${esc(step.nome || pe.assunto_esperado || "e-mail")}</b>
+        ${step.compat_status ? compatBadge(step.compat_status) : ""}
+        ${step.status_template ? badge(step.status_template) : ""}
+      </div>
+      <div><b>Assunto:</b> ${esc(assunto)}</div>${alts}
+      <div style="margin-top:8px"><b>Por que este e-mail:</b>${fmtProsa(pe.porque_este_angulo || "—")}</div>
+      <div><b>Prova / origem:</b>${fmtProsa(pe.prova_e_origem || "—")}</div>
+    </div>`;
+  }).join("");
   return `${cabecalho}
     <div style="border-left:4px solid ${rec.cor};background:#f6f8f9;border-radius:0 10px 10px 0;padding:12px 16px;margin-bottom:10px">
-      <b>${esc(rec.rot)}</b><br><small>${esc(b.justificativa || "")}</small></div>
-    <p><b>Resumo:</b> ${esc(b.resumo || "—")}</p>
-    <p><b>ICP e dor:</b> ${esc(b.icp_e_dor || "—")}</p>
-    <p><b>Por que agora:</b> ${esc(b.por_que_agora || "—")}</p>
-    ${(b.por_email || []).length ? `<b>Por que cada e-mail:</b>
-      <table style="margin-top:6px"><tr><th>#</th><th>Por que este ângulo</th><th>Prova e origem</th></tr>
-      ${b.por_email.map(e => `<tr><td>E${e.ordem}</td><td>${esc(e.porque_este_angulo || "")}</td>
-        <td><small>${esc(e.prova_e_origem || "")}</small></td></tr>`).join("")}</table>` : ""}
+      <b>${esc(rec.rot)}</b>${fmtProsa(b.justificativa || "")}</div>
+    <b>Resumo</b>${fmtProsa(b.resumo || "—")}
+    <b>ICP e dor</b>${fmtProsa(b.icp_e_dor || "—")}
+    <b>Por que agora</b>${fmtProsa(b.por_que_agora || "—")}
+    ${blocosEmail ? `<b style="display:block;margin-top:12px">Por quê de cada assunto</b>${blocosEmail}` : ""}
     ${(b.riscos || []).length ? `<p style="margin-top:10px"><b>⚠️ Riscos:</b></p>
-      <ul>${b.riscos.map(r => `<li>${esc(r)}</li>`).join("")}</ul>` : ""}
+      <ul>${b.riscos.map(r => `<li>${fmtProsa(r)}</li>`).join("")}</ul>` : ""}
     <p><b>Medição:</b> utm_campaign=<code>${esc(med.utm_campaign || "—")}</code> ·
       GA4 <code>${esc(med.evento_ga4 || "—")}</code> · ${esc(med.metrica_decisao || "")}</p>
     ${(b.checklist_pre_lancamento || []).length ? `<p><b>Checklist antes de ativar:</b></p>
       <ul>${b.checklist_pre_lancamento.map(x => `<li>☐ ${esc(x)}</li>`).join("")}</ul>` : ""}
     <div class="toolbar"><small class="muted">gerado em ${esc(b.gerado_em || "—")}</small><span class="sp"></span>
+      <button onclick="baixarCampanha(${id},'md')">⬇ .md</button>
+      <button onclick="baixarCampanha(${id},'txt')">⬇ .txt</button>
+      ${(camp && camp.export_docx === false) ? "" : `<button onclick="baixarCampanha(${id},'docx')">⬇ Word</button>`}
       <button onclick="gerarBriefingLancamento(${id})">↻ Regenerar</button></div>`;
 }
 
@@ -658,10 +742,10 @@ async function gerarBriefingLancamento(id) {
     <span class="muted"> a IA está consolidando os porquês da campanha (~1 min)…</span>`;
   try {
     const r = await api(`/api/campaigns/${id}/briefing`, {method: "POST"});
-    if (box) box.innerHTML = renderBriefingLancamento(id, r.briefing);
+    if (box) box.innerHTML = renderBriefingLancamento(id, r.briefing, window._campanhaAtual);
   } catch (e) {
     toast("Erro ao gerar briefing: " + e.message, 6000);
-    carregarBriefing(id);
+    carregarBriefing(id, window._campanhaAtual);
   }
 }
 
