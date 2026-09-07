@@ -9,6 +9,7 @@ import json
 import ai
 import db
 import ga4
+import grok
 import sync
 import google_media
 
@@ -129,7 +130,53 @@ def seo_geo_run(days=28):
     ordem = {"alta": 0, "média": 1, "baixa": 2}
     base["prioridades"].sort(key=lambda x: ordem.get(x["prioridade"], 9))
     base["prioridades"] = base["prioridades"][:6]
+    base["recomendacoes_grok"] = _seo_geo_grok_recs(base)
     return base
+
+
+def _seo_geo_grok_recs(snapshot: dict) -> list:
+    """2–3 recomendações narrativas via Grok (só sugestão; nunca publica)."""
+    if not grok.enabled():
+        return []
+    try:
+        payload = {
+            "metricas": snapshot.get("metricas") or {},
+            "prioridades": snapshot.get("prioridades") or [],
+            "pauta": snapshot.get("pauta") or [],
+            "paginas_monitoradas": (snapshot.get("paginas_monitoradas") or [])[:5],
+            "dias": snapshot.get("dias") or 28,
+        }
+        out = grok.generate_json(
+            f"""Você é o crítico SEO/GEO da 4Unik (B2B rewards / loyalty / incentivos).
+Com base no snapshot GA4 abaixo, devolva SOMENTE JSON:
+{{"recomendacoes":[{{"titulo":"...","acao":"1-2 frases práticas","prioridade":"alta|média|baixa","evidencia":"dado do snapshot"}}]}}
+Regras: no máximo 3 itens; não invente métricas; não proponha publicar/alterar o site
+automaticamente — só recomendações para revisão humana.
+
+SNAPSHOT:
+{json.dumps(payload, ensure_ascii=False)}""",
+            timeout=90, agent="grok_critic", task_type="seo_geo_recs",
+            detalhe="seo_geo_recomendacoes",
+        )
+        recs = out.get("recomendacoes") or []
+        clean = []
+        for r in recs[:3]:
+            if not isinstance(r, dict):
+                continue
+            clean.append({
+                "titulo": str(r.get("titulo") or "")[:160],
+                "acao": str(r.get("acao") or "")[:400],
+                "prioridade": str(r.get("prioridade") or "média")[:20],
+                "evidencia": str(r.get("evidencia") or "")[:240],
+                "via": out.get("_via") or "grok",
+            })
+        return clean
+    except Exception as ex:
+        return [{"titulo": "Grok indisponível neste ciclo",
+                 "acao": "Prioridades heurísticas GA4 seguem válidas; crítica Grok será tentada no próximo ciclo.",
+                 "prioridade": "baixa",
+                 "evidencia": str(ex)[:180],
+                 "via": "fallback"}]
 
 
 def run(reason="periodic", perform_sync=False):
