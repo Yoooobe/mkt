@@ -11,6 +11,9 @@ APP_ROOT=/app/gws-4unik
 DB_PATH="$APP_ROOT/dashboard/dashboard.db"
 BUCKET="${R2_BUCKET:-gws4unik-db}"
 
+# Remoto = espelho/acompanhamento. Criação e mutação de campanhas ficam no Mac.
+export DASHBOARD_ENV="${DASHBOARD_ENV:-remoto}"
+
 # --- 1. dashboard/.env a partir dos secrets do Worker ------------------------
 # engine._load_env_files() lê ARQUIVOS (dashboard/.env etc.), não os.environ.
 # Os secrets chegam como env vars (Worker → Container envVars) e são materializados
@@ -21,9 +24,28 @@ if [ ! -f "$ENV_FILE" ]; then
   chmod 600 "$ENV_FILE"
   for var in API_KEY TRACKING_BASE_URL TRACKING_SECRET TRACKING_SYNC_KEY \
              GA4_PROPERTY_ID GA4_CREDENTIALS_JSON GA4_MEASUREMENT_ID GA4_MP_API_SECRET \
-             ZAPI_URL ZAPI_CLIENT_TOKEN ZAPI_PHONE LEADS_NOTIFY_EMAIL; do
+             GA4_HOSTNAME_PLATAFORMA GA4_HOSTNAME_LOJA \
+             GOOGLE_GA4_ACCOUNT_ID GOOGLE_GA4_PROPERTY_ID GOOGLE_GA4_MEASUREMENT_ID \
+             GOOGLE_GA4_SITE_MEASUREMENT_ID GOOGLE_TAG_ID GOOGLE_ADS_TAG_ID \
+             GOOGLE_GTM_ACCOUNT_ID GOOGLE_GTM_CONTAINER_ID \
+             GOOGLE_ADS_CUSTOMER_ID GOOGLE_ADS_LOGIN_CUSTOMER_ID GOOGLE_ADS_DEVELOPER_TOKEN \
+             ZAPI_URL ZAPI_CLIENT_TOKEN ZAPI_PHONE LEADS_NOTIFY_EMAIL \
+             FIRECRAWL_API_KEY FIRECRAWL_CREDIT_BUDGET FIRECRAWL_MAX_LEADS_PER_JOB \
+             LEAD_EVIDENCE_TTL_DAYS LEAD_QUALITY_WORKER_URL LEAD_QUALITY_SYNC_KEY \
+             VERTEX_AGENT_NAME_ANALYZER VERTEX_AGENT_LEAD_VALIDATOR VERTEX_AGENT_SCRAPE_PLANNER \
+             VERTEX_AGENT_LOCATION \
+             VERTEX_PROJECT_ID VERTEX_CREDENTIALS_JSON VERTEX_LOCATION \
+             FOURUNIK_MAIL_PROVIDER VERTEX_MODEL_PRO VERTEX_MODEL_FLASH; do
     value="${!var:-}"
     if [ -n "$value" ]; then
+      # JSON inline de SA → arquivo (ga4.py / libs que esperam path).
+      if { [ "$var" = "GA4_CREDENTIALS_JSON" ] || [ "$var" = "VERTEX_CREDENTIALS_JSON" ]; } \
+         && [ "${value#\{}" != "$value" ]; then
+        cred_path="/tmp/${var}.json"
+        printf '%s\n' "$value" > "$cred_path"
+        chmod 600 "$cred_path"
+        value="$cred_path"
+      fi
       printf '%s=%s\n' "$var" "$value" >> "$ENV_FILE"
     fi
   done
@@ -33,31 +55,61 @@ fi
 # Antes era serial: tar → restore → probe → uvicorn. No cold start isso somava
 # dezenas de segundos antes da porta abrir.
 restore_db() {
-  if [ -f "$DB_PATH" ]; then
-    return 0
+  SEED_MARKER="$APP_ROOT/dashboard/.seed_sha"
+  # seed/version.txt no R2 = sha256 do snapshot local (sync econômico).
+  # Se mudou, reaplica seed mesmo com disco ainda quente (sleepAfter).
+  REMOTE_SEED_SHA=""
+  if [ -n "${R2_ENDPOINT:-}" ]; then
+    REMOTE_SEED_SHA="$(curl -fsS --aws-sigv4 "aws:amz:auto:s3" \
+      --user "${R2_ACCESS_KEY_ID}:${R2_SECRET_ACCESS_KEY}" \
+      "${R2_ENDPOINT}/${BUCKET}/seed/version.txt" 2>/dev/null | tr -d '[:space:]' || true)"
   fi
-  # FORCE_SEED_DB=1: ignora réplica Litestream e aplica seed/dashboard.db
-  # (usar após upload de seed novo + wipe da réplica, ou para rebootstrap).
-  if [ "${FORCE_SEED_DB:-}" = "1" ] && [ -n "${R2_ENDPOINT:-}" ]; then
-    echo "[entrypoint] FORCE_SEED_DB=1 — baixando seed/dashboard.db"
+  LOCAL_SEED_SHA="$(cat "$SEED_MARKER" 2>/dev/null | tr -d '[:space:]' || true)"
+  NEED_SEED=0
+  if [ "${FORCE_SEED_DB:-}" = "1" ]; then
+    NEED_SEED=1
+    echo "[entrypoint] FORCE_SEED_DB=1"
+  elif [ -n "$REMOTE_SEED_SHA" ] && [ "$REMOTE_SEED_SHA" != "$LOCAL_SEED_SHA" ]; then
+    NEED_SEED=1
+    echo "[entrypoint] seed/version.txt novo ($REMOTE_SEED_SHA ≠ ${LOCAL_SEED_SHA:-vazio}) — reseed"
+  fi
+
+  if [ "$NEED_SEED" = "1" ] && [ -n "${R2_ENDPOINT:-}" ]; then
+    rm -f "$DB_PATH" "${DB_PATH}-wal" "${DB_PATH}-shm" "$SEED_MARKER"
+    echo "[entrypoint] baixando seed/dashboard.db"
     if curl -fsS --aws-sigv4 "aws:amz:auto:s3" \
          --user "${R2_ACCESS_KEY_ID}:${R2_SECRET_ACCESS_KEY}" \
          "${R2_ENDPOINT}/${BUCKET}/seed/dashboard.db" -o "$DB_PATH"; then
-      echo "[entrypoint] seed/dashboard.db aplicado (force)"
+      if [ -n "$REMOTE_SEED_SHA" ]; then
+        printf '%s\n' "$REMOTE_SEED_SHA" > "$SEED_MARKER"
+      fi
+      echo "[entrypoint] seed/dashboard.db aplicado"
       return 0
     fi
-    echo "[entrypoint] FORCE_SEED_DB falhou — tentando restore normal"
+    echo "[entrypoint] seed falhou — tentando restore Litestream"
     rm -f "$DB_PATH"
   fi
+
+  if [ -f "$DB_PATH" ]; then
+    echo "[entrypoint] DB local já presente — mantendo"
+    return 0
+  fi
+
   echo "[entrypoint] restaurando dashboard.db do R2..."
   litestream restore -if-replica-exists -config /etc/litestream.yml "$DB_PATH" \
     || echo "[entrypoint] litestream restore falhou — tentando seed cru"
   if [ -f "$DB_PATH" ]; then
     echo "[entrypoint] restore concluído"
+    if [ -n "$REMOTE_SEED_SHA" ]; then
+      printf '%s\n' "$REMOTE_SEED_SHA" > "$SEED_MARKER"
+    fi
   elif [ -n "${R2_ENDPOINT:-}" ] && curl -fsS --aws-sigv4 "aws:amz:auto:s3" \
          --user "${R2_ACCESS_KEY_ID}:${R2_SECRET_ACCESS_KEY}" \
          "${R2_ENDPOINT}/${BUCKET}/seed/dashboard.db" -o "$DB_PATH"; then
     echo "[entrypoint] seed/dashboard.db aplicado (bootstrap inicial)"
+    if [ -n "$REMOTE_SEED_SHA" ]; then
+      printf '%s\n' "$REMOTE_SEED_SHA" > "$SEED_MARKER"
+    fi
   else
     rm -f "$DB_PATH"
     echo "[entrypoint] réplica e seed inexistentes — banco novo será criado pelo app (db.init)"

@@ -6,7 +6,8 @@
   "compatibility_date": "2026-07-15",
   // Deixar "" no dia a dia. Só "1" no rebootstrap pontual (seed + wipe da réplica).
   "vars": {
-    "FORCE_SEED_DB": ""
+    "FORCE_SEED_DB": "",
+    "DASHBOARD_ENV": "remoto"
   },
   "containers": [
     {

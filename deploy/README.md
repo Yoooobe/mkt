@@ -98,8 +98,75 @@ npx wrangler r2 object put gws4unik-db/seed/dashboard.db \
 rm /tmp/dashboard-seed.db
 ```
 
-> Pause o dashboard local (LaunchAgent) quando a nuvem virar a instância
-> oficial — dois processos escrevendo/replicando o mesmo banco divergem.
+> **Política atual:** o Mac (LaunchAgent) é o **dono** das campanhas e do
+> envio. O remoto é **espelho/acompanhamento** (`DASHBOARD_ENV=remoto`):
+> campanhas com `origem_ambiente=local` não podem ser editadas/ativadas lá.
+> Não pause o local só por ter espelhado o banco — o remoto **não** dispara
+> a fila de envio.
+
+## Reespelhar local → remoto (push pontual)
+
+Quando quiser atualizar leads/envios/campanhas no Cloudflare com o SQLite do Mac:
+
+```bash
+# 1) snapshot WAL-safe
+cd /Users/genautech/mkt/gws-4unik
+sqlite3 dashboard/dashboard.db ".backup /tmp/dashboard-seed.db"
+
+# 2) upload seed
+cd deploy/worker
+npx wrangler r2 object put gws4unik-db/seed/dashboard.db \
+  --file /tmp/dashboard-seed.db --remote
+
+# 3) wipe réplica Litestream (prefixo dashboard.db/) — senão o restore ignora o seed
+#    Liste via API Cloudflare R2 objects?prefix=dashboard.db/ e apague cada key:
+#    npx wrangler r2 object delete gws4unik-db/<key> --remote
+#    (atalho: scripts/push-db-to-remote.sh — ajuste se a listagem mudar)
+
+# 4) FORCE_SEED_DB=1 em wrangler.jsonc → npx wrangler deploy → abra o dashboard
+#    (Access) uma vez para o container bootar com o seed
+
+# 5) FORCE_SEED_DB="" → npx wrangler deploy de novo
+rm -f /tmp/dashboard-seed.db
+```
+
+Há também [`scripts/push-db-to-remote.sh`](../scripts/push-db-to-remote.sh) como
+esqueleto do mesmo fluxo (seed + wipe + FORCE_SEED + `seed/version.txt`).
+
+## Sync automático local ↔ remoto (econômico, sem LLM)
+
+**Política**
+
+| Direção | O que sincroniza | Como |
+|---------|------------------|------|
+| **local → remoto** | SQLite inteiro (campanhas, CRM, checklist, soft gates UI state) | `scripts/sync-local-to-remote.sh` |
+| **local → remoto (Gmail)** | Perfis `gws_accounts/` (credentials.enc) | `./scripts/sync-local-to-remote.sh --with-accounts` |
+| **remoto → local** | Engajamento (opens/clicks/replies) | Ambos puxam o mesmo `TRACKING_*` — **não** baixe o DB remoto para o Mac |
+| Mutação de campanha | Só no Mac (`origem_ambiente=local`) | No remoto: só acompanhamento; use `claim-local` se um dia criar campanha na nuvem |
+| **OAuth Gmail** | Só no Mac | No remoto o botão Conectar fica bloqueado (callback localhost do `gws`) |
+
+O script de sync compara um **fingerprint** (campanhas + contagens) com
+`~/.local/state/4unik-mail/last-remote-sync.fp`. Se for igual, **não faz
+deploy** (custo zero). Se mudou, chama o push completo. Lock evita push
+duplicado; o LaunchAgent roda a cada 6h sem `RunAtLoad`.
+
+```bash
+# status
+./scripts/sync-local-to-remote.sh --status
+
+# push agora (ou só se mudou)
+./scripts/sync-local-to-remote.sh
+./scripts/sync-local-to-remote.sh --force
+
+# LaunchAgent a cada 6h (skip automático se DB igual)
+mkdir -p ~/.local/state/4unik-mail/logs
+cp deploy/com.4unik.mail-sync.plist ~/Library/LaunchAgents/
+launchctl bootout gui/$(id -u)/com.4unik.mail-sync 2>/dev/null || true
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.4unik.mail-sync.plist
+```
+
+O entrypoint do container também lê `seed/version.txt`: se o sha no R2 mudou,
+reespelha o seed no próximo boot (mesmo com disco ainda quente após `sleepAfter`).
 
 ### Performance remota (já aplicado no código)
 
@@ -187,6 +254,21 @@ Confira também `npx wrangler tail` para ver os logs do entrypoint
   Opcionais: `VERTEX_LOCATION` (default `global`), `VERTEX_MODEL_PRO`
   (`gemini-2.5-pro`), `VERTEX_MODEL_FLASH` (`gemini-2.5-flash`). O CLI `claude`
   vira fallback local apenas onde existir.
+
+  Qualidade de leads (Firecrawl + Agent Engine + Queue Worker):
+
+  ```bash
+  npx wrangler secret put FIRECRAWL_API_KEY
+  npx wrangler secret put LEAD_QUALITY_WORKER_URL   # URL do 4unik-lead-quality
+  npx wrangler secret put LEAD_QUALITY_SYNC_KEY     # mesmo SYNC_KEY do lead-quality-worker
+  npx wrangler secret put VERTEX_AGENT_NAME_ANALYZER
+  npx wrangler secret put VERTEX_AGENT_LEAD_VALIDATOR
+  # opcional:
+  npx wrangler secret put VERTEX_AGENT_LOCATION     # us-central1
+  ```
+
+  O Worker de scrape está em `lead-quality-worker/` (ver README lá). Secrets
+  acima são materializados em `dashboard/.env` pelo `entrypoint.sh`.
 - GA4/Z-API na nuvem: adicionar os secrets opcionais (passo 3) se necessário.
 - Desativar o LaunchAgent local (`com.4unik.mail`) quando a nuvem virar a
   instância oficial — nunca rodar os dois replicando o mesmo caminho do R2.

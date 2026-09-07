@@ -71,6 +71,22 @@ openssl rand -hex 32
 
 O sistema usa `gws gmail ...` para ler threads e enviar emails.
 
+**OAuth Gmail só no Mac** (`localhost:8377`). O `gws auth login` abre um callback
+`http://localhost:PORTA` no processo local — isso **não funciona** no dashboard
+remoto (Cloudflare Container). Na produção, use o botão desabilitado “Só no Mac”
+e, após logar no local, espelhe as contas:
+
+```bash
+./scripts/sync-local-to-remote.sh --with-accounts
+```
+
+O Google pode abrir `localhost:PORTA` após o consent — isso é o servidor
+temporário do `gws`, não um bug. Não clique “Conectar” de novo até ver Success.
+
+**Bounces / Undeliverable:** NDRs de `postmaster` / `mailer-daemon` **não** são
+tratados como resposta de lead (evita auto-resposta `Re: Undeliverable` para o
+postmaster). Hard bounce marca o contato como `email_invalido`.
+
 Primeiro valide que o `gws` existe:
 
 ```bash

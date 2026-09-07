@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Sync econômico local → remoto (4unik.mail).
+  Roda a cada 6h; o script faz skip se o SQLite não mudou (zero deploy).
+  Instalar:
+    cp deploy/com.4unik.mail-sync.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.4unik.mail-sync.plist
+  Status / push manual:
+    ~/mkt/gws-4unik/scripts/sync-local-to-remote.sh --status
+    ~/mkt/gws-4unik/scripts/sync-local-to-remote.sh --force
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.4unik.mail-sync</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/genautech/mkt/gws-4unik/scripts/sync-local-to-remote.sh</string>
+  </array>
+  <key>StartInterval</key>
+  <integer>21600</integer>
+  <!-- false: evita push duplo ao instalar; o intervalo de 6h basta -->
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>/Users/genautech/.local/state/4unik-mail/logs/launchagent-sync.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/genautech/.local/state/4unik-mail/logs/launchagent-sync.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>/Users/genautech</string>
+  </dict>
+  <key>Nice</key>
+  <integer>10</integer>
+</dict>
+</plist>
