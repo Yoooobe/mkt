@@ -1,0 +1,27 @@
+// 4unik.mail — lead-quality Worker (Firecrawl off critical path).
+// Deploy: cd lead-quality-worker && npx wrangler deploy
+// Secrets: FIRECRAWL_API_KEY, SYNC_KEY, DASHBOARD_URL, DASHBOARD_API_KEY
+// Queue: criar uma vez — npx wrangler queues create lead-scrape
+{
+  "name": "4unik-lead-quality",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-21",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "queues": {
+    "producers": [
+      { "binding": "LEAD_SCRAPE", "queue": "lead-scrape" }
+    ],
+    "consumers": [
+      {
+        "queue": "lead-scrape",
+        "max_batch_size": 5,
+        "max_batch_timeout": 30,
+        "max_retries": 3
+      }
+    ]
+  }
+}

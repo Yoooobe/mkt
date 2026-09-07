@@ -1,0 +1,14 @@
+{
+  "name": "4unik-lead-quality",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Cloudflare Worker: Queue LEAD_SCRAPE + Firecrawl → evidência no dashboard",
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "types": "wrangler types"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}
