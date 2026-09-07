@@ -63,7 +63,21 @@ MAX_AUTOREPLIES_DIA = int(ENV.get("MAX_AUTOREPLIES_DIA", "10") or 10)
 MAX_AUTOREPLIES_THREAD = int(ENV.get("MAX_AUTOREPLIES_POR_THREAD_DIA", "1") or 1)
 STATE_DIR = db.PROPOSALS / "monitor_state"
 DRAFTS_DIR = db.PROPOSALS / "drafts"
-SKIP_FROM_REPLY = re.compile(r"mailer-daemon|noreply|no-reply|notifications@|calendar-notification", re.I)
+# Sistema / NDR: nunca tratar como resposta de lead (evita auto-reply para postmaster).
+SKIP_FROM_REPLY = re.compile(
+    r"mailer-daemon|postmaster@|noreply|no-reply|do-not-reply|donotreply|"
+    r"notifications@|calendar-notification|mailerdaemon|delivery.?status",
+    re.I)
+BOUNCE_SUBJECT_RE = re.compile(
+    r"undeliverable|delivery\s*status\s*notification|failure\s*notice|"
+    r"returned\s*mail|mail\s*delivery\s*failed|não\s*foi\s*poss[ií]vel\s*entregar|"
+    r"delivery\s*failure|non[- ]delivery",
+    re.I)
+# Destinatário falho em NDRs Microsoft / genéricos (além de Final-Recipient:).
+BOUNCE_TO_RE = re.compile(
+    r"(?:your message to|couldn't be delivered to|address not found for)\s*"
+    r"<?([\w.+%-]+@[\w.-]+\.\w+)>?",
+    re.I)
 # trava de conteúdo: valor/desconto/contrato só passam nos caminhos aprovados
 PRECO_RE = re.compile(r"R\$\s*\d|\bdesconto\b|\bcontrato\b|cláusula|clausula|\bgrátis\b", re.I)
 
@@ -205,6 +219,33 @@ def preparar_perfil(sid):
                           f"— logue no navegador como {s['email']} e depois clique em Verificar.")}
 
 
+def _clear_gws_token_cache(home):
+    """Remove token_cache.json stale (comum após re-login OAuth)."""
+    if not home:
+        # Conta default (slug vazio): perfil da máquina.
+        path = Path.home() / ".config" / "gws" / "token_cache.json"
+    else:
+        path = Path(home) / ".config" / "gws" / "token_cache.json"
+    try:
+        if path.exists():
+            path.unlink()
+            return True
+    except OSError:
+        pass
+    return False
+
+
+def _gws_auth_error_hint(err):
+    e = (err or "").lower()
+    if "invalid_grant" in e or "invalid authentication" in e or "autherror" in e:
+        return " — reconecte no Mac (Remetentes → Conectar) e autorize de novo"
+    if "insufficient" in e and "scope" in e:
+        return " — faça login de novo pedindo escopo Gmail (gws auth login -s gmail)"
+    if "decrypt" in e:
+        return " — credentials.enc de outra máquina; logout + login neste Mac"
+    return ""
+
+
 def sender_auth_status(sender):
     """🟢/🔴 — teste REAL de conexão: chama a API Gmail (getProfile) no perfil.
 
@@ -216,17 +257,28 @@ def sender_auth_status(sender):
     home = gws_home(sender)
     if home is not None and not (Path(home) / ".config" / "gws" / "credentials.enc").exists():
         return {"conectado": False, "motivo": "perfil ainda não criado/logado", "conta_real": ""}
-    try:
-        r = _gws(["users", "getProfile", "--params", '{"userId":"me"}'], home=home) or {}
-    except Exception as ex:
-        return {"conectado": False, "conta_real": "",
-                "motivo": f"não consegui checar a conexão ({str(ex)[:80]})"}
+
+    def _probe():
+        try:
+            return _gws(["users", "getProfile", "--params", '{"userId":"me"}'], home=home) or {}
+        except Exception as ex:
+            return {"error": {"message": f"não consegui checar a conexão ({str(ex)[:80]})"}}
+
+    r = _probe()
     err = ((r.get("error") or {}).get("message") or "").strip()
+    # Após re-OAuth, gws às vezes mantém token_cache.json velho → 401.
+    # Uma limpeza + retry costuma bastar sem novo login.
+    if err and re.search(r"invalid authentication|authError|invalid_grant", err, re.I):
+        if _clear_gws_token_cache(home):
+            r = _probe()
+            err = ((r.get("error") or {}).get("message") or "").strip()
+
     conta_real = (r.get("emailAddress") or "").strip().lower()
     esperado = (sender.get("email") or "").strip().lower()
     if err:
+        short = err.split("\n")[0][:160]
         return {"conectado": False, "conta_real": "",
-                "motivo": f"API Gmail recusou: {err.split(chr(10))[0][:160]}"}
+                "motivo": f"API Gmail recusou: {short}{_gws_auth_error_hint(err)}"}
     if not conta_real:
         return {"conectado": False, "motivo": "precisa login", "conta_real": ""}
     if conta_real != esperado:
@@ -252,6 +304,8 @@ def iniciar_login(sid):
     home = gws_home(s)
     if home:
         preparar_perfil(sid)               # garante diretório + client_secret.json
+    # Evita 401 por access token antigo misturado com credentials.enc novo.
+    _clear_gws_token_cache(home)
     antigo = _LOGIN_PROCS.get(sid)
     if antigo and antigo["proc"].poll() is None:
         antigo["proc"].kill()
@@ -310,11 +364,37 @@ def template_get(ref):
     return None
 
 
+def primeiro_nome(nome, fallback="tudo bem por aí"):
+    """Só o primeiro nome para saudação em e-mails (nunca nome completo).
+
+    Aceita CRM com nome completo / ALL CAPS / 'João e Maria' / títulos (Dr./Dra.).
+    """
+    raw = (nome or "").strip()
+    if not raw:
+        return fallback
+    raw = raw.split(" e ")[0].split(",")[0].strip()
+    parts = [p for p in raw.split() if p]
+    # Remove títulos comuns no início
+    titulos = {
+        "dr", "dra", "sr", "sra", "srta", "prof", "profa",
+        "dr.", "dra.", "sr.", "sra.", "srta.", "prof.", "profa.",
+    }
+    while parts and parts[0].lower() in titulos:
+        parts = parts[1:]
+    if not parts:
+        return fallback
+    first = parts[0]
+    # CRM às vezes grava "LETICIA GOIS…" — capitaliza só quando vier monolítico
+    if first.isupper() or first.islower():
+        first = first[:1].upper() + first[1:].lower()
+    return first
+
+
 def render_vars(texto, contato):
     contato = contato or {}
     modulos = (contato.get("modulos") or "").split("|")
     valores = {
-        "nome": (contato.get("nome") or "tudo bem por aí").split(" e ")[0].split(",")[0].strip(),
+        "nome": primeiro_nome(contato.get("nome")),
         "empresa": contato.get("empresa") or "sua empresa",
         "modulo": modulos[0].strip() if modulos[0].strip() else "que conversamos",
         "data_proposta": contato.get("primeiro_envio") or "nossa última conversa",
@@ -362,6 +442,18 @@ def render_html(ref, contato=None, sender=None, cid=None):
     return render_vars(t["assunto"], contato), render_vars(html, contato)
 
 
+def render_draft_html(preheader="", inner_html="", cta="", cta_url="",
+                      contato=None, sender=None, cid=None):
+    """Renderiza miolo ainda não salvo (editor / prévia ao vivo)."""
+    assinatura = (sender or {}).get("signature_url") or None
+    unsub = _unsub_url((contato or {}).get("email", ""), cid)
+    cta_label = "" if _inner_tem_botao(inner_html) else (cta or "")
+    html = email_templates.shell(
+        preheader or "", inner_html or "", cta_label,
+        cta_url or email_templates.WA, assinatura, unsub)
+    return render_vars(html, contato)
+
+
 # ---------------- guardrails de envio ----------------
 
 def _toques_30d(c, email):
@@ -384,9 +476,16 @@ def pode_enviar(c, camp, contato, cc, tpl, manual_immediate=False):
             motivo = "e-mail inválido (hard bounce)"
         elif db.TAG_SOFT_SUPRIMIDO in _sup:
             motivo = f"soft bounce reincidente (≥{SOFT_BOUNCE_LIMITE}×)"
+        elif db.TAG_CONTATO_DESATUALIZADO in _sup:
+            motivo = "desatualizado (não está mais na empresa)"
+        elif db.TAG_EMAIL_OBSOLETO in _sup:
+            motivo = "e-mail obsoleto (validação pré-envio)"
         else:
             motivo = "descadastrou (unsubscribe)"
         return False, f"contato {motivo} — não recebe mais"
+    _vstatus = (contato.get("validacao_status") or "").strip().lower()
+    if _vstatus in db.VALIDACAO_BLOQUEIA:
+        return False, f"contato validação={_vstatus} — não recebe mais"
     # defesa em profundidade: cliente 4unik só recebe se o Genal confirmou QUERO_ENVIAR
     if db.contato_eh_cliente(contato.get("tags", "")) and not camp["clientes_confirmados"]:
         return False, "contato é cliente 4unik — exige confirmação QUERO_ENVIAR na ativação"
@@ -560,6 +659,92 @@ def agendar_campanha(campaign_id):
     c.commit()
     c.close()
     return n
+
+
+def forcar_disparo_imediato(campaign_id):
+    """Inicia a 1ª etapa agora: ignora ``inicio_em`` e a janela comercial.
+
+    Contatos ainda na etapa 0 (pendente/ativo) recebem ``next_send_at`` escalonado
+    a partir de agora e entram na fila com ``immediate=True`` (mesmo guardrail do
+    disparo manual na ficha do lead). Demais etapas seguem a cadência normal.
+    """
+    c = db.conn()
+    camp = c.execute("SELECT * FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+    steps = c.execute(
+        "SELECT 1 FROM campaign_steps WHERE campaign_id=? LIMIT 1", (campaign_id,)
+    ).fetchone()
+    if not camp or camp["status"] != "ativa" or not steps:
+        c.close()
+        return {"agendados": 0, "enfileirados": 0, "processados": 0}
+    # Limpa horário futuro para não prender reativações / reexibição na UI.
+    c.execute("UPDATE campaigns SET inicio_em='' WHERE id=?", (campaign_id,))
+    c.execute(
+        "DELETE FROM queue WHERE tipo='campaign_send' AND status='pending' AND payload LIKE ?",
+        (f'%\"campaign_id\": {int(campaign_id)},%',),
+    )
+    contatos = c.execute(
+        """SELECT email FROM campaign_contacts
+           WHERE campaign_id=? AND status IN ('pendente','ativo') AND etapa_atual=0
+           ORDER BY email""",
+        (campaign_id,),
+    ).fetchall()
+    base = datetime.now()
+    for i, cc in enumerate(contatos):
+        quando = (base + timedelta(minutes=i * ESPACAMENTO_ENVIOS_MIN)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        c.execute(
+            """UPDATE campaign_contacts SET status='ativo', next_send_at=?
+               WHERE campaign_id=? AND email=?""",
+            (quando, campaign_id, cc["email"]),
+        )
+    c.commit()
+    c.close()
+
+    enfileirados = 0
+    qids = []
+    for i, cc in enumerate(contatos):
+        quando = (base + timedelta(minutes=i * ESPACAMENTO_ENVIOS_MIN)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        qid = db.enqueue_once(
+            "campaign_send",
+            {
+                "campaign_id": int(campaign_id),
+                "email": cc["email"],
+                "etapa": 1,
+                "immediate": True,
+            },
+            quando,
+        )
+        if qid is not None:
+            enfileirados += 1
+            qids.append(qid)
+
+    processados = 0
+    agora_s = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for qid in qids:
+        c = db.conn()
+        item = c.execute("SELECT * FROM queue WHERE id=?", (qid,)).fetchone()
+        c.close()
+        if not item:
+            continue
+        # Processa só o que já venceu; o resto fica para o gatilho de ~10 s / ciclo.
+        if (item["run_at"] or "") > agora_s:
+            continue
+        claimed, _failed = _process_queue_item(item)
+        if claimed:
+            processados += 1
+
+    log(
+        f"DISPARO IMEDIATO campanha {campaign_id}: {len(contatos)} contato(s) "
+        f"agendados, {enfileirados} na fila, {processados} processado(s) agora"
+    )
+    return {
+        "agendados": len(contatos),
+        "enfileirados": enfileirados,
+        "processados": processados,
+    }
 
 
 # ---------------- handlers da fila ----------------
@@ -767,6 +952,18 @@ def _html_resposta(paragrafos, botao=None, assinatura=None):
 
 def _responder_lead(reply_to_msg, thread_id, texto, botao=None, sender=None):
     """FASE 2: envia a resposta na thread (In-Reply-To + assinatura) como o remetente."""
+    # Defesa: nunca responder NDR/postmaster (evita Re: Undeliverable → postmaster).
+    if _is_bounce_or_system(reply_to_msg):
+        log("AUTO-RESPOSTA abortada: mensagem é bounce/sistema")
+        return None
+    to_addr = parseaddr(_hdr(reply_to_msg, "From"))[1].strip().lower()
+    if to_addr and SKIP_FROM_REPLY.search(to_addr):
+        log(f"AUTO-RESPOSTA abortada: destino sistema {to_addr}")
+        return None
+    subj_chk = _hdr(reply_to_msg, "Subject") or ""
+    if BOUNCE_SUBJECT_RE.search(subj_chk):
+        log(f"AUTO-RESPOSTA abortada: assunto bounce ({subj_chk[:60]})")
+        return None
     home = gws_home(sender)
     de = f"{sender['nome']} <{sender['email']}>" if sender else "Time 4Unik <comercial@4unik.com.br>"
     assinatura = (sender or {}).get("signature_url") or None
@@ -982,10 +1179,18 @@ def scan_replies(only_thread=""):
         for m in msgs:
             frm = _hdr(m, "From")
             if (_is_our_message(m, sender, nossos_ids.get(tid), sender_emails)
-                    or m["id"] in vistos or SKIP_FROM_REPLY.search(frm)):
+                    or m["id"] in vistos):
                 continue
             if int(m.get("internalDate", "0") or 0) <= nosso_dt:
                 continue  # mensagem anterior ao nosso envio — não é resposta a esta campanha
+            # NDR/postmaster na thread: registra bounce e NÃO classifica/auto-responde
+            if _is_bounce_or_system(m) or SKIP_FROM_REPLY.search(frm or ""):
+                try:
+                    registrar_bounce_de_mensagem(m, sender=sender)
+                except Exception as ex:
+                    log(f"bounce na thread {tid[:12]}: falha ao registrar ({ex})")
+                vistos.add(m["id"])
+                continue
             ct = dict(r)
             ct["thread"] = tid
             processar_resposta(ct, nosso_ultimo, _corpo_texto(m["payload"]), m, frm, sender)
@@ -1093,6 +1298,106 @@ BOUNCE_SOFT = re.compile(r"\b4\.\d\.\d\b|\b5\.2\.\d\b|\b5\.7\.\d\b|\b5\.3\.\d\b|
 BOUNCE_FAILED_RE = re.compile(r"Final-Recipient:\s*rfc822;\s*([\w.+%-]+@[\w.-]+\.\w+)", re.I)
 BOUNCE_CODE_RE = re.compile(r"\b([45]\.\d\.\d+)\b")
 
+
+def _payload_mime_hint(payload):
+    """Content-Type do payload Gmail (raiz) em minúsculas."""
+    if not isinstance(payload, dict):
+        return ""
+    for h in payload.get("headers") or []:
+        if (h.get("name") or "").lower() == "content-type":
+            return (h.get("value") or "").lower()
+    return (payload.get("mimeType") or "").lower()
+
+
+def _is_bounce_or_system(msg):
+    """True se a mensagem é NDR/sistema e não deve virar reply de lead."""
+    if not msg:
+        return True
+    frm = _hdr(msg, "From") or ""
+    if SKIP_FROM_REPLY.search(frm):
+        return True
+    subj = _hdr(msg, "Subject") or ""
+    if BOUNCE_SUBJECT_RE.search(subj):
+        return True
+    auto = (_hdr(msg, "Auto-Submitted") or "").strip().lower()
+    if auto and auto not in ("no",):
+        return True
+    if (_hdr(msg, "X-MS-Exchange-Message-Is-Ndr") or "").strip() != "":
+        return True
+    # Return-Path vazio é típico de DSN (header pode vir como <>).
+    rp = (_hdr(msg, "Return-Path") or "").strip()
+    if rp in ("<>", ""):
+        # Só trata como bounce se houver outro sinal (subject/from/mime) — evita
+        # falsos positivos em mensagens sem Return-Path na API. Já coberto acima
+        # na maioria dos NDRs; reforço via mime:
+        mime = _payload_mime_hint(msg.get("payload") or {})
+        if "multipart/report" in mime or "delivery-status" in mime:
+            return True
+    mime = _payload_mime_hint(msg.get("payload") or {})
+    if "multipart/report" in mime and "delivery-status" in mime:
+        return True
+    return False
+
+
+def _extract_failed_recipient(msg, corpo=""):
+    """Destinatário que falhou no NDR (não o postmaster)."""
+    failed = (_hdr(msg, "X-Failed-Recipients") or "").strip().lower()
+    if failed and "@" in failed:
+        return parseaddr(failed)[1].strip().lower() or failed.split()[0]
+    corpo = corpo or _corpo_texto((msg or {}).get("payload") or {}) or ""
+    m = BOUNCE_FAILED_RE.search(corpo)
+    if m:
+        return m.group(1).lower()
+    m = BOUNCE_TO_RE.search(corpo)
+    if m:
+        return m.group(1).lower()
+    # "v.magalhaes wasn't found at brms.com.br"
+    m = re.search(
+        r"([\w.+%-]+) wasn't found at ([\w.-]+\.\w+)", corpo, re.I)
+    if m:
+        return f"{m.group(1).lower()}@{m.group(2).lower()}"
+    return ""
+
+
+def registrar_bounce_de_mensagem(msg, sender=None, failed_email=""):
+    """Persiste bounce a partir de uma msg Gmail (idempotente por msgid).
+    Retorna dict {novo, email, tipo, suprimido} ou None se inválida."""
+    if not msg or not msg.get("id"):
+        return None
+    mid = msg["id"]
+    corpo = _corpo_texto(msg.get("payload") or {}) or ""
+    failed = (failed_email or _extract_failed_recipient(msg, corpo) or "").strip().lower()
+    if not failed or "4unik" in failed:
+        return None
+    tipo = "hard" if BOUNCE_HARD.search(corpo) else "soft"
+    # Subject Undeliverable + wasn't found → forçar hard
+    subj = _hdr(msg, "Subject") or ""
+    if BOUNCE_SUBJECT_RE.search(subj) and (
+            BOUNCE_HARD.search(corpo) or "wasn't found" in corpo.lower()
+            or "couldn't be delivered" in corpo.lower()):
+        tipo = "hard"
+    mcod = BOUNCE_CODE_RE.search(corpo)
+    codigo = mcod.group(1) if mcod else ""
+    sid = (sender or {}).get("id")
+    c = db.conn()
+    exists = c.execute("SELECT 1 FROM bounces WHERE msgid=?", (mid,)).fetchone()
+    if exists:
+        c.close()
+        return {"novo": False, "email": failed, "tipo": tipo, "suprimido": False}
+    c.execute("""INSERT OR IGNORE INTO bounces(msgid,email,tipo,codigo,diagnostico,sender_id)
+                 VALUES(?,?,?,?,?,?)""",
+              (mid, failed, tipo, codigo, re.sub(r"\s+", " ", corpo)[:300], sid))
+    suprimido = False
+    ehcontato = c.execute("SELECT 1 FROM contacts WHERE email=?", (failed,)).fetchone()
+    if tipo == "hard" and ehcontato:
+        db.marcar_email_invalido(c, failed)
+        suprimido = True
+    c.commit()
+    c.close()
+    if suprimido:
+        log(f"bounce NDR: {failed} marcado email_invalido (msgid={mid[:12]})")
+    return {"novo": True, "email": failed, "tipo": tipo, "suprimido": suprimido}
+
 # Soft bounce reincidente: nº de devoluções temporárias do mesmo endereço a partir do qual o
 # contato é REMOVIDO da base (deixa de receber). Soft não prova que o e-mail não existe, então
 # só suprime por reincidência — não no 1º toque.
@@ -1139,27 +1444,13 @@ def scan_bounces():
             if not full:
                 continue
             vistos.add(mid)
-            corpo = _corpo_texto(full["payload"]) or ""
-            failed = _hdr(full, "X-Failed-Recipients").strip().lower()
-            if not failed:
-                m = BOUNCE_FAILED_RE.search(corpo)
-                failed = m.group(1).lower() if m else ""
-            if not failed or "4unik" in failed:
+            r = registrar_bounce_de_mensagem(full, sender=sender)
+            if not r:
                 continue
-            tipo = "hard" if BOUNCE_HARD.search(corpo) else "soft"
-            mcod = BOUNCE_CODE_RE.search(corpo)
-            codigo = mcod.group(1) if mcod else ""
-            c = db.conn()
-            c.execute("""INSERT OR IGNORE INTO bounces(msgid,email,tipo,codigo,diagnostico,sender_id)
-                         VALUES(?,?,?,?,?,?)""",
-                      (mid, failed, tipo, codigo, re.sub(r"\s+", " ", corpo)[:300], sender.get("id")))
-            ehcontato = c.execute("SELECT 1 FROM contacts WHERE email=?", (failed,)).fetchone()
-            if tipo == "hard" and ehcontato:
-                db.marcar_email_invalido(c, failed)
-                suprimidos.append(failed)
-            c.commit()
-            c.close()
-            novos += 1
+            if r.get("novo"):
+                novos += 1
+            if r.get("suprimido"):
+                suprimidos.append(r["email"])
     # Varredura de soft REINCIDENTE: qualquer endereço com ≥ N devoluções temporárias vira lixo
     # (existe, mas nunca entrega) e é removido da base. Cobre backlog + novos, idempotente (não
     # remexe em quem já tem a tag). Soft não prova inexistência, por isso só suprime por reincidência.

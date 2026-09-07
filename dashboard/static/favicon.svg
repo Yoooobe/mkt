@@ -1,1 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#0f1720"/><text x="16" y="22" font-family="Montserrat,Arial" font-size="16" font-weight="800" fill="#66e3c4" text-anchor="middle">4</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="7" fill="#0A0A0A"/>
+  <defs>
+    <linearGradient id="g" x1="6" y1="26" x2="26" y2="6" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B05000"/>
+      <stop offset=".5" stop-color="#F98F16"/>
+      <stop offset="1" stop-color="#F5C542"/>
+    </linearGradient>
+  </defs>
+  <text x="16" y="22" font-family="Montserrat,Arial,sans-serif" font-size="16" font-weight="800" fill="url(#g)" text-anchor="middle">4</text>
+</svg>

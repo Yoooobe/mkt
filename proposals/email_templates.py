@@ -10,6 +10,10 @@ DEMO = "https://calendly.com/4unik/30min?month=2026-07"
 SITE = "https://plataforma.4unik.com.br"
 
 
+LOGO_URL = "https://plataforma.4unik.com.br/landing/brand/4unik-mark.png"
+TEAL = "#62d8be"
+
+
 def shell(preheader, inner, cta_label, cta_url=DEMO, assinatura=None, unsubscribe_url=""):
     """Moldura Gmail-safe para 4unik.mail."""
     assinatura = assinatura if assinatura is not None else ASSINATURA
@@ -21,13 +25,17 @@ def shell(preheader, inner, cta_label, cta_url=DEMO, assinatura=None, unsubscrib
              f'<a href="{unsubscribe_url}" style="color:#7f8c96;text-decoration:underline">Descadastrar</a>.</p>'
              ) if unsubscribe_url else ""
     contact = (f'<p style="margin:14px 0 0;font-size:12px;color:#aebdca;line-height:1.7">'
-               f'Fale com a 4Unik: <a href="{WA}" style="color:#66e3c4;text-decoration:underline">'
+               f'Fale com a 4Unik: <a href="{WA}" style="color:{TEAL};text-decoration:underline">'
                f'WhatsApp {WHATSAPP_NUMBER}</a> &nbsp;·&nbsp; '
-               f'<a href="{MAIL}" style="color:#66e3c4;text-decoration:underline">{COMMERCIAL_EMAIL}</a></p>')
+               f'<a href="{MAIL}" style="color:{TEAL};text-decoration:underline">{COMMERCIAL_EMAIL}</a></p>')
+    platform = (f'<p style="margin:16px 0 0;font-size:13px;line-height:1.6">'
+                f'<a href="{SITE}" style="color:{TEAL};font-weight:700;text-decoration:underline">'
+                f'Conheça a plataforma 4Unik</a>'
+                f'<span style="color:#7f8c96"> &nbsp;·&nbsp; plataforma.4unik.com.br</span></p>')
     # cta_label vazio = sem botão da moldura (o miolo já traz o próprio CTA;
     # evita dois botões iguais no mesmo e-mail).
     btn = (f'<table role="presentation" cellpadding="0" cellspacing="0" style="margin:28px auto 8px"><tr>'
-           f'<td style="border-radius:10px;background-color:#66e3c4">'
+           f'<td style="border-radius:10px;background-color:{TEAL}">'
            f'<a href="{cta_url}" style="display:inline-block;padding:14px 34px;font-family:Montserrat,Arial,sans-serif;'
            f'font-size:15px;font-weight:700;color:#0f1720;text-decoration:none">{cta_label}</a>'
            f'</td></tr></table>') if (cta_label or "").strip() else ""
@@ -36,9 +44,13 @@ def shell(preheader, inner, cta_label, cta_url=DEMO, assinatura=None, unsubscrib
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#eef2f4">
 <tr><td align="center" style="padding:24px 12px">
 <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%">
-<tr><td style="background-color:#0f1720;background-image:linear-gradient(160deg,#1f2933,#0f1720);border-radius:14px 14px 0 0;padding:28px 36px">
-  <span style="font-family:Montserrat,Arial,sans-serif;font-size:24px;font-weight:800;color:#ffffff">4<span style="color:#66e3c4">Unik</span></span>
-  <span style="float:right;font-family:'DM Sans',Arial,sans-serif;font-size:11px;letter-spacing:1.4px;color:#aebdca;padding-top:9px">REWARD INFRASTRUCTURE</span>
+<tr><td style="background-color:#171f26;background-image:linear-gradient(160deg,#1f2933,#171f26);border-radius:14px 14px 0 0;padding:28px 36px">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+    <td style="vertical-align:middle">
+      <img src="{LOGO_URL}" width="140" height="36" alt="4Unik" style="display:block;border:0;outline:none;height:36px;width:auto;max-width:160px">
+    </td>
+    <td align="right" style="vertical-align:middle;font-family:'DM Sans',Arial,sans-serif;font-size:11px;letter-spacing:1.4px;color:#aebdca">REWARD INFRASTRUCTURE</td>
+  </tr></table>
 </td></tr>
 <tr><td style="background-color:#ffffff;padding:36px;font-family:'DM Sans',Arial,sans-serif;font-size:15px;color:#18242f;line-height:1.6">
 {inner}
@@ -48,6 +60,7 @@ def shell(preheader, inner, cta_label, cta_url=DEMO, assinatura=None, unsubscrib
 <p style="margin:0 0 14px;font-size:12px;color:#aebdca">Gamificacao, carteiras, loja corporativa, API e fulfillment em uma unica stack.</p>
 {sig}
 {contact}
+{platform}
 {unsub}
 </td></tr>
 </table></td></tr></table></body></html>"""

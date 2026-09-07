@@ -8,6 +8,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import re
 import sqlite3
 import unicodedata
@@ -113,6 +114,7 @@ CREATE TABLE IF NOT EXISTS campaigns (
   audience_profile TEXT DEFAULT '',        -- segmento inteligente usado na seleção da audiência
   versao INTEGER DEFAULT 1,                -- sobe a cada reescrita / regeneração relevante
   atualizada_em TEXT DEFAULT '',           -- última bump de versão (localtime)
+  origem_ambiente TEXT DEFAULT 'local',    -- local | remoto (onde a campanha foi criada)
   criada_em TEXT DEFAULT (datetime('now','localtime'))
 );
 
@@ -179,10 +181,15 @@ CREATE TABLE IF NOT EXISTS name_fixes (
   email TEXT PRIMARY KEY,
   nome_atual TEXT DEFAULT '',
   nome_sugerido TEXT DEFAULT '',
-  acao TEXT DEFAULT 'manter',              -- manter | corrigir | limpar
+  empresa_sugerida TEXT DEFAULT '',
+  cargo_sugerido TEXT DEFAULT '',
+  telefone_sugerido TEXT DEFAULT '',
+  campos_json TEXT DEFAULT '',             -- JSON: campos_vazios, fontes
+  acao TEXT DEFAULT 'manter',              -- manter | corrigir | limpar | enriquecer
   confianca REAL DEFAULT 0,
   motivo TEXT DEFAULT '',
   status TEXT DEFAULT 'pendente',          -- pendente | aprovado | rejeitado | aplicado
+  auto INTEGER DEFAULT 0,                  -- 1 = auto-aplicado (confianca alta)
   lote TEXT DEFAULT '',
   criado_em TEXT DEFAULT (datetime('now','localtime'))
 );
@@ -204,6 +211,100 @@ CREATE TABLE IF NOT EXISTS ga4_cache (
   key TEXT PRIMARY KEY,
   payload TEXT,
   fetched_at TEXT
+);
+
+-- Evidência pública (Firecrawl) para validação/enriquecimento de leads. TTL em leads.py.
+CREATE TABLE IF NOT EXISTS lead_evidence (
+  email TEXT PRIMARY KEY,
+  fetched_at TEXT DEFAULT '',
+  payload_json TEXT DEFAULT '',
+  urls TEXT DEFAULT '',                    -- JSON list
+  job_id TEXT DEFAULT ''
+);
+
+-- Telemetria Vertex / Agent Engine (tokens por tarefa).
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent TEXT DEFAULT '',
+  task_type TEXT DEFAULT '',
+  model TEXT DEFAULT '',
+  prompt_tokens INTEGER DEFAULT 0,
+  completion_tokens INTEGER DEFAULT 0,
+  total_tokens INTEGER DEFAULT 0,
+  cost_usd REAL DEFAULT 0,
+  latency_ms INTEGER DEFAULT 0,
+  campaign_id INTEGER,
+  ok INTEGER DEFAULT 1,
+  fallback INTEGER DEFAULT 0,
+  erro TEXT DEFAULT '',
+  detalhe TEXT DEFAULT '',
+  meta_json TEXT DEFAULT '',
+  criado_em TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- Conhecimento gerado/distilado pelos agentes (além dos KBs markdown).
+CREATE TABLE IF NOT EXISTS agent_knowledge (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent TEXT DEFAULT '',
+  campaign_id INTEGER,
+  run_id INTEGER,
+  titulo TEXT DEFAULT '',
+  corpo TEXT DEFAULT '',
+  tags TEXT DEFAULT '',
+  criado_em TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- Loop de melhorias: uma execução do orquestrador sobre uma campanha.
+CREATE TABLE IF NOT EXISTS improvement_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campaign_id INTEGER NOT NULL,
+  triggered_by TEXT DEFAULT 'dashboard',
+  mode TEXT DEFAULT 'review',              -- auto | review | selective
+  status TEXT DEFAULT 'queued',            -- queued|planning|running|awaiting_approval|
+                                           -- applying|regenerating_templates|completed|failed|cancelled
+  suggestions_snapshot TEXT DEFAULT '[]',  -- JSON
+  totals TEXT DEFAULT '{}',                -- JSON
+  started_at TEXT DEFAULT '',
+  finished_at TEXT DEFAULT '',
+  error TEXT DEFAULT '',
+  criado_em TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS improvement_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  improvement_run_id INTEGER NOT NULL,
+  campaign_id INTEGER NOT NULL,
+  source_suggestion_id TEXT DEFAULT '',
+  category TEXT DEFAULT 'outro',
+  title TEXT DEFAULT '',
+  rationale TEXT DEFAULT '',
+  status TEXT DEFAULT 'pending',           -- pending|queued|running|awaiting_approval|
+                                           -- approved|applied|rejected|failed|skipped
+  assigned_agent_key TEXT DEFAULT '',
+  iteration INTEGER DEFAULT 0,
+  max_iterations INTEGER DEFAULT 3,
+  proposed_patch TEXT DEFAULT '',          -- JSON
+  confidence REAL DEFAULT 0,
+  risk_level TEXT DEFAULT 'medium',        -- low|medium|high
+  validator_verdict TEXT DEFAULT '',       -- JSON
+  applied_at TEXT DEFAULT '',
+  approved_by TEXT DEFAULT '',
+  rejection_reason TEXT DEFAULT '',
+  human_feedback TEXT DEFAULT '',
+  criado_em TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- Snapshot completo para diff/rollback.
+CREATE TABLE IF NOT EXISTS campaign_versions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  campaign_id INTEGER NOT NULL,
+  improvement_run_id INTEGER,
+  payload TEXT DEFAULT '{}',               -- JSON estado da campanha
+  templates_snapshot TEXT DEFAULT '[]',    -- JSON
+  version_number INTEGER DEFAULT 1,
+  created_by TEXT DEFAULT 'human',         -- human | agent
+  note TEXT DEFAULT '',
+  criado_em TEXT DEFAULT (datetime('now','localtime'))
 );
 """
 
@@ -248,6 +349,14 @@ def campaign_slug(campaign_id):
     return slug
 
 
+def dashboard_env():
+    """Identidade do ambiente: local (Mac/LaunchAgent) ou remoto (Cloudflare Container)."""
+    v = (os.environ.get("DASHBOARD_ENV") or "local").strip().lower()
+    if v in ("remoto", "remote", "cloud", "container"):
+        return "remoto"
+    return "local"
+
+
 def init():
     c = conn()
     c.executescript(SCHEMA)
@@ -287,9 +396,12 @@ def init():
                   (slugify(r["nome"]) or f"c{r['id']}", r["id"]))
     # enriquecimento de contatos (RD Station inbound): campos para cohort e personalização
     for col in ("cargo", "porte_assinantes", "porte_funcionarios", "erp", "etapa_funil",
-                "estado_negocio", "motivo_perda", "qualificacao", "telefone", "enriquecimento"):
+                "estado_negocio", "motivo_perda", "qualificacao", "telefone", "enriquecimento",
+                "validado_em", "validacao_status", "validacao_motivo"):
         if col not in ccols:
             c.execute(f"ALTER TABLE contacts ADD COLUMN {col} TEXT DEFAULT ''")
+    # re-ler colunas após ALTER (ccols pode estar stale se a tabela já existia)
+    ccols = {r["name"] for r in c.execute("PRAGMA table_info(contacts)")}
     tcols = {r["name"] for r in c.execute("PRAGMA table_info(templates_ai)")}
     if "assuntos_alt" not in tcols:
         # variantes de assunto (JSON list) geradas pelo copywriter para teste de gancho
@@ -298,10 +410,37 @@ def init():
         c.execute("ALTER TABLE campaigns ADD COLUMN versao INTEGER DEFAULT 1")
     if "atualizada_em" not in pcols:
         c.execute("ALTER TABLE campaigns ADD COLUMN atualizada_em TEXT DEFAULT ''")
+    # Re-ler campaigns após ALTERs anteriores (pcols pode estar stale).
+    pcols = {r["name"] for r in c.execute("PRAGMA table_info(campaigns)")}
+    if "origem_ambiente" not in pcols:
+        # Bancos existentes neste host: assumir origem = ambiente atual (Mac → local).
+        default_origem = dashboard_env()
+        c.execute(
+            f"ALTER TABLE campaigns ADD COLUMN origem_ambiente TEXT DEFAULT '{default_origem}'"
+        )
+        c.execute(
+            "UPDATE campaigns SET origem_ambiente=? "
+            "WHERE origem_ambiente IS NULL OR origem_ambiente=''",
+            (default_origem,),
+        )
+    else:
+        c.execute(
+            "UPDATE campaigns SET origem_ambiente='local' "
+            "WHERE origem_ambiente IS NULL OR origem_ambiente=''"
+        )
     for col, typ in (("campaign_id", "INTEGER"), ("versao_campanha", "INTEGER"),
                      ("substituido_por", "INTEGER")):
         if col not in tcols:
             c.execute(f"ALTER TABLE templates_ai ADD COLUMN {col} {typ}")
+    # Qualidade: propostas multi-campo + auto-apply
+    nfcols = {r["name"] for r in c.execute("PRAGMA table_info(name_fixes)")}
+    for col, typ in (("empresa_sugerida", "TEXT DEFAULT ''"),
+                     ("cargo_sugerido", "TEXT DEFAULT ''"),
+                     ("telefone_sugerido", "TEXT DEFAULT ''"),
+                     ("campos_json", "TEXT DEFAULT ''"),
+                     ("auto", "INTEGER DEFAULT 0")):
+        if col not in nfcols:
+            c.execute(f"ALTER TABLE name_fixes ADD COLUMN {col} {typ}")
     # backfill: campanhas sem timestamp de atualização usam criada_em; templates
     # apontados pelos steps herdam campaign_id + versão atual da campanha.
     c.execute("""UPDATE campaigns SET atualizada_em=criada_em
@@ -850,10 +989,22 @@ def contato_eh_cliente(tags):
 #  email_invalido        → e-mail não existe (hard bounce detectado em scan_bounces).
 #  soft_bounce_suprimido → devolveu soft (temporário) N vezes seguidas (reincidência) e foi
 #                          removido — o endereço pode existir, mas nunca entrega, então vira lixo.
+#  contato_desatualizado → validação Vertex+Firecrawl: pessoa não está mais na empresa.
+#  email_obsoleto        → validação: e-mail aparentemente morto/errado (antes do bounce).
 TAG_DESCADASTRO = "descadastrado"
 TAG_EMAIL_INVALIDO = "email_invalido"
 TAG_SOFT_SUPRIMIDO = "soft_bounce_suprimido"
-TAGS_SUPRIMIDAS = (TAG_DESCADASTRO, TAG_EMAIL_INVALIDO, TAG_SOFT_SUPRIMIDO, "nao-contatar")
+TAG_CONTATO_DESATUALIZADO = "contato_desatualizado"
+TAG_EMAIL_OBSOLETO = "email_obsoleto"
+TAGS_SUPRIMIDAS = (
+    TAG_DESCADASTRO, TAG_EMAIL_INVALIDO, TAG_SOFT_SUPRIMIDO, "nao-contatar",
+    TAG_CONTATO_DESATUALIZADO, TAG_EMAIL_OBSOLETO,
+)
+
+# Frescor da evidência Firecrawl (dias). Override via LEAD_EVIDENCE_TTL_DAYS no .env.
+LEAD_EVIDENCE_TTL_DAYS = 30
+VALIDACAO_OK = frozenset({"valido", "duvidoso", ""})
+VALIDACAO_BLOQUEIA = frozenset({"desatualizado", "invalido"})
 
 
 def _marcar_suprimido(c, email, tag, status_cc):
@@ -886,6 +1037,82 @@ def marcar_soft_suprimido(c, email):
     """Remove o contato por soft bounce reincidente (N devoluções temporárias) e pausa a
     cadência. Idempotente. Tag separada da hard para distinguir o motivo no dashboard."""
     return _marcar_suprimido(c, email, TAG_SOFT_SUPRIMIDO, "soft_suprimido")
+
+
+def marcar_contato_desatualizado(c, email):
+    """Suprime contato que a validação (Vertex+Firecrawl) marcou fora da empresa."""
+    return _marcar_suprimido(c, email, TAG_CONTATO_DESATUALIZADO, "desatualizado")
+
+
+def marcar_email_obsoleto(c, email):
+    """Suprime e-mail aparentemente morto/errado antes do bounce (validação pré-envio)."""
+    return _marcar_suprimido(c, email, TAG_EMAIL_OBSOLETO, "email_obsoleto")
+
+
+def save_lead_evidence(email, payload, urls=None, job_id=""):
+    """Upsert evidência Firecrawl. `payload` é dict ou JSON string."""
+    email = (email or "").strip().lower()
+    if not email:
+        return False
+    if isinstance(payload, dict):
+        payload = json.dumps(payload, ensure_ascii=False)
+    urls_json = json.dumps(urls or [], ensure_ascii=False)
+    agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c = conn()
+    c.execute("""INSERT INTO lead_evidence(email, fetched_at, payload_json, urls, job_id)
+                 VALUES(?,?,?,?,?)
+                 ON CONFLICT(email) DO UPDATE SET
+                   fetched_at=excluded.fetched_at, payload_json=excluded.payload_json,
+                   urls=excluded.urls, job_id=excluded.job_id""",
+              (email, agora, payload or "", urls_json, job_id or ""))
+    c.commit()
+    c.close()
+    return True
+
+
+def get_lead_evidence(email, max_age_days=None):
+    """Devolve dict da evidência ou None se ausente/expirada."""
+    email = (email or "").strip().lower()
+    max_age_days = LEAD_EVIDENCE_TTL_DAYS if max_age_days is None else max_age_days
+    c = conn()
+    row = c.execute("SELECT * FROM lead_evidence WHERE email=?", (email,)).fetchone()
+    c.close()
+    if not row:
+        return None
+    fetched = row["fetched_at"] or ""
+    if fetched and max_age_days is not None:
+        try:
+            dt = datetime.strptime(fetched[:19], "%Y-%m-%d %H:%M:%S")
+            if (datetime.now() - dt).days > max_age_days:
+                return None
+        except ValueError:
+            pass
+    try:
+        payload = json.loads(row["payload_json"] or "{}")
+    except Exception:
+        payload = {}
+    try:
+        urls = json.loads(row["urls"] or "[]")
+    except Exception:
+        urls = []
+    return {"email": email, "fetched_at": fetched, "payload": payload,
+            "urls": urls, "job_id": row["job_id"] or ""}
+
+
+def set_validacao_contato(email, status, motivo=""):
+    """Atualiza validacao_* no contato. status: valido|duvidoso|desatualizado|invalido."""
+    email = (email or "").strip().lower()
+    status = (status or "").strip().lower()
+    agora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    c = conn()
+    c.execute("""UPDATE contacts SET validado_em=?, validacao_status=?, validacao_motivo=?
+                 WHERE email=?""", (agora, status, (motivo or "")[:240], email))
+    if status == "desatualizado":
+        marcar_contato_desatualizado(c, email)
+    elif status == "invalido":
+        marcar_email_obsoleto(c, email)
+    c.commit()
+    c.close()
 
 
 def contatos_cliente_na_campanha(cid):

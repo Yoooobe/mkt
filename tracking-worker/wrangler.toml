@@ -2,6 +2,17 @@ name = "4unik-mail-tracking"
 main = "src/index.js"
 compatibility_date = "2026-06-12"
 
+# PRODUÇÃO ATUAL: o dashboard usa a API Vercel
+#   TRACKING_BASE_URL=https://leads-ingest-api.vercel.app/api/email
+# com rotas /open?token= /click?token= /events?cursor= (ver engine.inject_tracking).
+# Este Worker CF usa schema diferente (/o/<token> /c/<token> /events?since=) —
+# NÃO apontar TRACKING_BASE_URL para cá sem adaptar o código.
+# Para subir este Worker no futuro:
+#   npx wrangler d1 create 4unik_mail_tracking   # cole o uuid abaixo
+#   npx wrangler d1 execute 4unik_mail_tracking --remote --file=schema.sql
+#   npx wrangler secret put TRACKING_SECRET / TRACKING_SYNC_KEY
+#   npx wrangler deploy
+
 # Domínio próprio melhora entregabilidade (vs *.workers.dev). Descomente após
 # apontar a rota no painel Cloudflare (zona 4unik):
 # routes = [{ pattern = "t.4unik.com.br", custom_domain = true }]

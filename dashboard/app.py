@@ -21,16 +21,23 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import agent_usage
 import ai
+import campaign_guard_gate
 import db
 import engine
 import export_campanha
+import firecrawl
 import ga4
+import grok
+import improvements
+import leads
 import nomes
 import seed
 import sync
 import strategy
 import google_media
+import vertex
 
 ENV_FILE = db.BASE / ".env"
 
@@ -50,11 +57,101 @@ app = FastAPI(title="4unik.mail", version="1.0",
               description="Dashboard local de email marketing com IA da 4Unik")
 
 
+def _campaign_origem(camp) -> str:
+    if camp is None:
+        return "local"
+    try:
+        v = camp["origem_ambiente"]
+    except (KeyError, IndexError, TypeError):
+        v = None
+    return (v or "local").strip().lower() or "local"
+
+
+def _somente_acompanhamento(origem: str) -> bool:
+    """No remoto, campanhas criadas no local são só leitura."""
+    return db.dashboard_env() == "remoto" and _campaign_origem({"origem_ambiente": origem}) == "local"
+
+
+def _precisa_decisao_import(origem: str) -> bool:
+    """No local, campanhas criadas no remoto pedem importar-como-local antes de mutar."""
+    return db.dashboard_env() == "local" and _campaign_origem({"origem_ambiente": origem}) == "remoto"
+
+
+def _guard_campaign_create():
+    if db.dashboard_env() == "remoto":
+        return JSONResponse(
+            {"erro": "Criação de campanhas só no ambiente local (Mac / localhost:8377).",
+             "dashboard_env": "remoto"},
+            status_code=403,
+        )
+    return None
+
+
+def _guard_campaign_mutation(cid: int):
+    """Bloqueia mutações conforme origem × ambiente. None = liberado."""
+    c = db.conn()
+    camp = c.execute("SELECT id, origem_ambiente FROM campaigns WHERE id=?", (cid,)).fetchone()
+    c.close()
+    if not camp:
+        return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
+    origem = _campaign_origem(camp)
+    if _somente_acompanhamento(origem):
+        return JSONResponse({
+            "erro": ("Campanha criada no ambiente local — só acompanhamento no remoto. "
+                     "Altere no Mac (localhost:8377)."),
+            "somente_acompanhamento": True,
+            "origem_ambiente": origem,
+            "dashboard_env": db.dashboard_env(),
+        }, status_code=403)
+    if _precisa_decisao_import(origem):
+        return JSONResponse({
+            "erro": ("Campanha criada no remoto. Importe como local "
+                     "(POST /api/campaigns/{id}/claim-local) antes de alterar."),
+            "precisa_decisao": True,
+            "origem_ambiente": origem,
+            "dashboard_env": db.dashboard_env(),
+        }, status_code=403)
+    return None
+
+
+def _guard_improvement_run_mutation(rid: int):
+    c = db.conn()
+    row = c.execute("SELECT campaign_id FROM improvement_runs WHERE id=?", (rid,)).fetchone()
+    c.close()
+    if not row:
+        return JSONResponse({"erro": "run não encontrado"}, status_code=404)
+    return _guard_campaign_mutation(int(row["campaign_id"]))
+
+
+def _guard_improvement_task_mutation(tid: int):
+    c = db.conn()
+    row = c.execute("SELECT campaign_id FROM improvement_tasks WHERE id=?", (tid,)).fetchone()
+    c.close()
+    if not row:
+        return JSONResponse({"erro": "task não encontrada"}, status_code=404)
+    return _guard_campaign_mutation(int(row["campaign_id"]))
+
+
 @app.middleware("http")
 async def auth(request: Request, call_next):
     if request.url.path.startswith("/api/") and request.headers.get("X-API-Key") != API_KEY:
         return JSONResponse({"erro": "X-API-Key inválida (veja dashboard/.env)"}, status_code=401)
     return await call_next(request)
+
+
+@app.get("/api/health")
+def api_health():
+    """Identidade do ambiente + flags para a UI (local dono / remoto espelho)."""
+    env = db.dashboard_env()
+    return {
+        "ok": True,
+        "dashboard_env": env,
+        "dono_campanhas": env == "local",
+        "espelho": env == "remoto",
+        "nota": ("Local cria/edita/envia campanhas. Remoto acompanha campanhas de origem local."
+                 if env == "remoto" else
+                 "Ambiente local: autoridade de criação e alteração de campanhas."),
+    }
 
 
 # ---------------- bootstrap ----------------
@@ -102,22 +199,34 @@ def notificar_leads_novos():
 
 
 # ---------------- loops de runtime (ligados sob demanda) ----------------
-# Para reduzir consumo, as 4 threads de background só nascem quando existe
-# campanha ativa (ensure_runtime_loops) e adormecem sozinhas quando não há
-# mais trabalho: no topo de cada iteração o loop checa sua condição e, se
-# falsa, espera no _wake (timeout de reavaliação) em vez de girar no
-# intervalo curto. _wake.set() na ativação acorda todo mundo na hora.
+# Para reduzir consumo, as threads de campanha só nascem quando existe
+# campanha ativa / envio recente (ensure_runtime_loops) e adormecem sozinhas
+# quando não há mais trabalho. Já o loop de estratégia + SEO/GEO é contínuo:
+# mede o site mesmo sem campanha de e-mail ativa.
 
 _loops_lock = threading.Lock()
 _loops_started = False
+_strategy_loop_started = False
 _wake = threading.Event()
 _IDLE_WAIT_S = 300
+_STRATEGY_INTERVAL_S = 1800  # 30 min — ciclo contínuo SEO/GEO + estratégia
 
 
 def _dormir_ate_ativar():
     """Espera um _wake.set() (ativação de campanha) ou o timeout de reavaliação."""
     if _wake.wait(_IDLE_WAIT_S):
         _wake.clear()
+
+
+def _strategy_seo_geo_loop():
+    """Loop contínuo de estratégia + SEO/GEO — independente de campanhas ativas."""
+    while True:
+        time.sleep(_STRATEGY_INTERVAL_S)
+        try:
+            strategy.run("periodic", perform_sync=False)
+            engine.log("ciclo contínuo estratégia/SEO-GEO concluído")
+        except Exception as e:
+            engine.log(f"ciclo estratégia/SEO-GEO com erro: {e}")
 
 
 def _ciclo_periodico():
@@ -127,7 +236,6 @@ def _ciclo_periodico():
             continue
         try:
             engine.process_cycle()
-            strategy.run("periodic", perform_sync=False)
         except Exception as e:
             engine.log(f"ciclo com erro inesperado: {e}")
         time.sleep(1800)
@@ -159,16 +267,17 @@ def _poll_replies_loop():
             _dormir_ate_ativar()
             continue
         time.sleep(180)
+        # Bounces ANTES de replies: NDR na thread não pode virar auto-resposta.
+        try:
+            engine.scan_bounces()
+        except Exception:
+            pass
         try:
             engine.poll_replies()
         except Exception:
             pass
         try:
             engine.scan_calendly()
-        except Exception:
-            pass
-        try:
-            engine.scan_bounces()   # auto-supressão de e-mails inexistentes (hard bounce)
         except Exception:
             pass
         try:
@@ -192,18 +301,37 @@ def _campaign_dispatch_loop():
 
 
 def ensure_runtime_loops():
-    """Liga as 4 threads de background uma única vez (idempotente e thread-safe).
+    """Liga as threads de campanha uma única vez (idempotente e thread-safe).
 
     Não existe "stop": ao pausar/apagar a última campanha ativa, cada loop
-    percebe na iteração seguinte e adormece no _wake até a próxima ativação."""
+    percebe na iteração seguinte e adormece no _wake até a próxima ativação.
+
+    No remoto (espelho), NÃO dispara envio — só tracking/respostas para acompanhar.
+    O LaunchAgent local continua como remetente único."""
     global _loops_started
     with _loops_lock:
         if _loops_started:
             return
         _loops_started = True
+    if db.dashboard_env() == "remoto":
+        for alvo in (_poll_tracking_loop, _poll_replies_loop):
+            threading.Thread(target=alvo, daemon=True).start()
+        engine.log("loops de runtime (espelho remoto: tracking/replies, sem envio) iniciados")
+        return
     for alvo in (_ciclo_periodico, _poll_tracking_loop, _poll_replies_loop, _campaign_dispatch_loop):
         threading.Thread(target=alvo, daemon=True).start()
     engine.log("loops de runtime iniciados")
+
+
+def ensure_strategy_loop():
+    """Liga o loop contínuo de estratégia + SEO/GEO (sempre ativo, sem campanha)."""
+    global _strategy_loop_started
+    with _loops_lock:
+        if _strategy_loop_started:
+            return
+        _strategy_loop_started = True
+    threading.Thread(target=_strategy_seo_geo_loop, daemon=True).start()
+    engine.log("loop contínuo estratégia/SEO-GEO iniciado")
 
 
 def _startup_catchup():
@@ -220,11 +348,41 @@ def _startup_catchup():
             engine.scan_calendly()
         except Exception as e:
             engine.log(f"scan_calendly no startup falhou: {e}")
+        # SEO/GEO e estratégia rodam mesmo com 0 campanhas ativas.
+        ensure_strategy_loop()
         if engine.has_active_campaigns() or engine.has_recent_sends(days=14):
             ensure_runtime_loops()
         engine.log("startup catch-up concluído")
     except Exception as e:
         engine.log(f"startup catch-up falhou: {e}")
+
+
+def _quarantine_stale_bg_jobs():
+    """Jobs em meta (threads daemon) morrem com --reload; não deixar lock zumbi."""
+    cleared = []
+    for key, label in (("nomes_analise", "análise de nomes"),
+                       ("leads_validacao", "validação de leads")):
+        raw = db.meta_get(key, "")
+        if not raw:
+            continue
+        try:
+            p = json.loads(raw)
+        except Exception:
+            continue
+        if (p.get("status") or "") != "analisando":
+            continue
+        feitos = int(p.get("feitos") or 0)
+        total = int(p.get("total") or 0)
+        p.update({
+            "status": "erro",
+            "cancel": False,
+            "etapa": "interrompido (restart)",
+            "erro": (f"worker morto no restart do servidor — {label} em "
+                     f"{feitos}/{total or '?'}. Clique em Retomar ou Analisar de novo."),
+        })
+        db.meta_set(key, json.dumps(p, ensure_ascii=False))
+        cleared.append(f"{label} ({feitos}/{total or '?'})")
+    return cleared
 
 
 @app.on_event("startup")
@@ -234,6 +392,20 @@ def startup():
     interrompidos = db.quarantine_interrupted_queue()
     if interrompidos:
         engine.log(f"startup: {interrompidos} envio(s) interrompido(s) isolado(s); reenvio automático bloqueado")
+    stale = _quarantine_stale_bg_jobs()
+    if stale:
+        engine.log("startup: jobs em background interrompidos: " + "; ".join(stale))
+    try:
+        # Só zumbis antigos — force_all mata runs legítimos a cada --reload.
+        imp_cleared = improvements.quarantine_stale_improvement_runs(
+            max_age_sec=90, force_all_workers=False)
+        if imp_cleared:
+            engine.log(
+                "startup: runs de melhorias órfãos cancelados: "
+                + ", ".join(str(x) for x in imp_cleared)
+            )
+    except Exception as ex:
+        engine.log(f"startup: quarantine melhorias falhou: {ex}")
     seed.seed_senders()
     seed.seed_campanha_reativacao()
     seed.seed_tags()
@@ -520,6 +692,9 @@ def contact_enrich(email: str, body: EnriquecerContatoBody):
 @app.post("/api/contacts/{email}/campaigns")
 def contact_add_campaign(email: str, body: VincularCampanhaBody):
     """Inclui contato em campanha editável. Nunca ativa ou dispara a campanha."""
+    blocked = _guard_campaign_mutation(body.campaign_id)
+    if blocked:
+        return blocked
     email = email.lower()
     c = db.conn()
     contato = c.execute("SELECT 1 FROM contacts WHERE email=?", (email,)).fetchone()
@@ -549,6 +724,9 @@ def contact_launch_campaign_now(email: str, body: DisparoImediatoBody):
     normal. O envio manual só dispensa a janela comercial; nunca dispensa os outros
     guardrails de entrega, consentimento e proteção de clientes.
     """
+    blocked = _guard_campaign_mutation(body.campaign_id)
+    if blocked:
+        return blocked
     email = email.lower()
     c = db.conn()
     contato = c.execute("SELECT * FROM contacts WHERE email=?", (email,)).fetchone()
@@ -651,6 +829,9 @@ def contact_launch_campaign_now(email: str, body: DisparoImediatoBody):
 @app.post("/api/contacts/{email}/campaign-ai")
 def contact_campaign_ai(email: str, body: CampanhaIndividualBody):
     """Cria campanha individual em rascunho; geração não envia nem aprova templates."""
+    blocked = _guard_campaign_create()
+    if blocked:
+        return blocked
     objetivo = body.objetivo.strip()
     if not objetivo:
         return JSONResponse({"erro": "objetivo é obrigatório"}, status_code=422)
@@ -812,67 +993,197 @@ def _nomes_progresso():
         return {"status": "idle"}
 
 
-def _nomes_worker(origem=None):
-    """Varre a base, filtra suspeitos (heurística) e pede à IA as correções; grava só
-    as propostas que MUDAM algo (corrigir/limpar) em name_fixes como 'pendente'."""
+def _nomes_aplicar_contato(c, email, decisao, contato):
+    """Aplica sugestões da decisão em contacts. Retorna True se algo mudou."""
+    mudou = False
+    acao = decisao.get("acao")
+    if acao == "limpar":
+        if (contato.get("nome") or "").strip():
+            c.execute("UPDATE contacts SET nome='' WHERE email=?", (email,))
+            mudou = True
+    else:
+        nome_novo = (decisao.get("nome_sugerido") or "").strip()
+        nome_atual = (contato.get("nome") or "").strip()
+        if nome_novo and nome_novo != nome_atual and acao in ("corrigir", "enriquecer"):
+            c.execute("UPDATE contacts SET nome=? WHERE email=?", (nome_novo, email))
+            mudou = True
+    for col, key in (("empresa", "empresa_sugerida"), ("cargo", "cargo_sugerido"),
+                     ("telefone", "telefone_sugerido")):
+        sug = (decisao.get(key) or "").strip()
+        atual = (contato.get(col) or "").strip()
+        if sug and sug != atual:
+            c.execute(f"UPDATE contacts SET {col}=? WHERE email=?", (sug, email))
+            mudou = True
+    return mudou
+
+
+def _nomes_cancel_requested() -> bool:
+    return bool(_nomes_progresso().get("cancel"))
+
+
+def _nomes_worker(origem=None, tags=None, segmento=None, emails=None, campaign_id=None):
+    """Varre a base, coleta evidência (Firecrawl), pede à IA (name_analyzer) e
+    grava propostas. Auto-aplica no CRM quando confianca >= AUTO_APPLY_MIN_CONF.
+
+    Retoma sem reprocessar e-mails que já têm name_fixes em
+    pendente|aprovado|rejeitado|aplicado."""
     try:
+        agent_usage.set_run_context(agent="name_analyzer", task_type="analisar_nomes",
+                                    campaign_id=campaign_id)
+        rows = leads.resolve_contacts(origem=origem, tags=tags, segmento=segmento,
+                                      emails=emails, campaign_id=campaign_id)
         c = db.conn()
-        if origem:
-            rows = c.execute("SELECT email,nome,empresa FROM contacts WHERE origem=?", (origem,)).fetchall()
-        else:
-            rows = c.execute("SELECT email,nome,empresa FROM contacts").fetchall()
+        ja = {r["email"] for r in c.execute(
+            "SELECT email FROM name_fixes WHERE status IN "
+            "('pendente','aprovado','rejeitado','aplicado')").fetchall()}
         c.close()
-        suspeitos = []
+        candidatos = []
+        ja_resolvidos = 0
         for r in rows:
-            ok, motivo = nomes.suspeito(r["nome"], r["email"], r["empresa"])
-            if ok:
-                suspeitos.append({"email": r["email"], "nome": r["nome"] or "",
-                                  "empresa": r["empresa"] or "", "_motivo": motivo})
-        _nomes_set(status="analisando", total=len(suspeitos), feitos=0,
-                   etapa="consultando a IA…", erro="")
+            ok, motivo = nomes.candidato(r)
+            if not ok:
+                continue
+            if r["email"] in ja:
+                ja_resolvidos += 1
+                continue
+            candidatos.append({
+                "email": r["email"],
+                "nome": r.get("nome") or "",
+                "empresa": r.get("empresa") or "",
+                "cargo": r.get("cargo") or "",
+                "telefone": r.get("telefone") or "",
+                "_motivo": motivo,
+            })
+        total = ja_resolvidos + len(candidatos)
+        _nomes_set(status="analisando", total=total, feitos=ja_resolvidos, cancel=False,
+                   etapa=(f"retomando — {ja_resolvidos} já resolvidos, "
+                          f"{len(candidatos)} restantes…" if ja_resolvidos
+                          else "coletando evidência (site/e-mail)…"),
+                   erro="", auto_aplicados=0)
+        if not candidatos:
+            c = db.conn()
+            propostas = c.execute(
+                "SELECT COUNT(*) n FROM name_fixes WHERE status='pendente'").fetchone()["n"]
+            c.close()
+            _nomes_set(status="pronto", etapa="concluído (nada pendente)",
+                       feitos=total, propostas=propostas)
+            return
         lote_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-        feitos, BATCH = 0, 25
+        feitos, auto_n, BATCH = ja_resolvidos, 0, 10
         c = db.conn()
-        for i in range(0, len(suspeitos), BATCH):
-            chunk = suspeitos[i:i + BATCH]
+        for i in range(0, len(candidatos), BATCH):
+            if _nomes_cancel_requested():
+                propostas = c.execute(
+                    "SELECT COUNT(*) n FROM name_fixes WHERE status='pendente'").fetchone()["n"]
+                c.close()
+                _nomes_set(status="erro", cancel=False, feitos=feitos,
+                           propostas=propostas, auto_aplicados=auto_n,
+                           etapa="cancelado",
+                           erro="análise cancelada — clique em Retomar para continuar")
+                return
+            chunk = candidatos[i:i + BATCH]
+            _nomes_set(etapa=f"evidência {feitos + 1}–{min(feitos + BATCH, total)}/{total}…")
+            for r in chunk:
+                try:
+                    evidence = leads._resolve_evidence(r, escalate_search=True)
+                    r["evidence_text"] = firecrawl.evidence_text_for_agent(evidence)
+                except Exception as ex:
+                    r["evidence_text"] = f"(erro ao coletar evidência: {str(ex)[:80]})"
+            _nomes_set(etapa=f"consultando Vertex name_analyzer ({feitos}/{total})…")
             dmap = {d["email"]: d for d in nomes.analisar_lote(chunk, batch=BATCH)}
             for r in chunk:
-                d = dmap.get(r["email"], {"acao": "manter"})
-                if d.get("acao") not in ("corrigir", "limpar"):
-                    continue   # só estaciona o que muda algo
+                d = dmap.get(r["email"], {"acao": "manter", "confianca": 0})
+                if not nomes.tem_mudanca(d, r):
+                    continue
                 ex = c.execute("SELECT status FROM name_fixes WHERE email=?", (r["email"],)).fetchone()
                 if ex and ex["status"] in ("aprovado", "rejeitado", "aplicado"):
                     continue   # não atropela decisão já tomada pelo Genal
-                c.execute("""INSERT INTO name_fixes(email,nome_atual,nome_sugerido,acao,confianca,motivo,status,lote)
-                             VALUES(?,?,?,?,?,?, 'pendente', ?)
+                campos_json = json.dumps({
+                    "campos_vazios": d.get("campos_vazios") or [],
+                    "fontes": d.get("fontes") or [],
+                }, ensure_ascii=False)
+                conf = float(d.get("confianca") or 0)
+                auto = 0
+                status = "pendente"
+                # Auto-aplicar só com confiança alta e mudança segura
+                if conf >= nomes.AUTO_APPLY_MIN_CONF:
+                    if _nomes_aplicar_contato(c, r["email"], d, r):
+                        status = "aplicado"
+                        auto = 1
+                        auto_n += 1
+                c.execute("""INSERT INTO name_fixes(
+                               email,nome_atual,nome_sugerido,empresa_sugerida,cargo_sugerido,
+                               telefone_sugerido,campos_json,acao,confianca,motivo,status,auto,lote)
+                             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                              ON CONFLICT(email) DO UPDATE SET
-                               nome_atual=excluded.nome_atual, nome_sugerido=excluded.nome_sugerido,
-                               acao=excluded.acao, confianca=excluded.confianca, motivo=excluded.motivo,
-                               status='pendente', lote=excluded.lote""",
-                          (r["email"], r["nome"], d.get("nome_sugerido", ""), d["acao"],
-                           d.get("confianca", 0), d.get("motivo") or r["_motivo"], lote_id))
+                               nome_atual=excluded.nome_atual,
+                               nome_sugerido=excluded.nome_sugerido,
+                               empresa_sugerida=excluded.empresa_sugerida,
+                               cargo_sugerido=excluded.cargo_sugerido,
+                               telefone_sugerido=excluded.telefone_sugerido,
+                               campos_json=excluded.campos_json,
+                               acao=excluded.acao, confianca=excluded.confianca,
+                               motivo=excluded.motivo, status=excluded.status,
+                               auto=excluded.auto, lote=excluded.lote""",
+                          (r["email"], r["nome"], d.get("nome_sugerido", ""),
+                           d.get("empresa_sugerida", ""), d.get("cargo_sugerido", ""),
+                           d.get("telefone_sugerido", ""), campos_json,
+                           d.get("acao", "manter"), conf,
+                           d.get("motivo") or r["_motivo"], status, auto, lote_id))
             c.commit()
             feitos += len(chunk)
-            _nomes_set(feitos=feitos, etapa=f"analisados {feitos}/{len(suspeitos)}")
+            _nomes_set(feitos=feitos, auto_aplicados=auto_n,
+                       etapa=f"analisados {feitos}/{total}")
         propostas = c.execute("SELECT COUNT(*) n FROM name_fixes WHERE status='pendente'").fetchone()["n"]
         c.close()
-        _nomes_set(status="pronto", etapa="concluído", feitos=len(suspeitos), propostas=propostas)
+        _nomes_set(status="pronto", etapa="concluído", feitos=total,
+                   propostas=propostas, auto_aplicados=auto_n, cancel=False)
     except Exception as ex:
-        _nomes_set(status="erro", erro=str(ex)[:300])
+        _nomes_set(status="erro", erro=str(ex)[:300], cancel=False)
         print(f"[nomes] ERRO: {ex}", flush=True)
+    finally:
+        agent_usage.clear_run_context()
 
 
 class AnalisarNomes(BaseModel):
     origem: Optional[str] = None
+    tags: Optional[str] = None
+    segmento: Optional[str] = None
+    emails: Optional[List[str]] = None
+    campaign_id: Optional[int] = None
 
 
 @app.post("/api/nomes/analisar")
 def nomes_analisar(b: Optional[AnalisarNomes] = None):
     if _nomes_progresso().get("status") == "analisando":
         return JSONResponse({"erro": "já existe uma análise em andamento"}, status_code=409)
-    _nomes_set(status="analisando", total=0, feitos=0, etapa="iniciando…", erro="", propostas=0)
-    threading.Thread(target=_nomes_worker, args=((b.origem if b else None),), daemon=True).start()
+    _nomes_set(status="analisando", total=0, feitos=0, etapa="iniciando…",
+               erro="", propostas=0, cancel=False)
+    body = b or AnalisarNomes()
+    threading.Thread(
+        target=_nomes_worker,
+        kwargs={"origem": body.origem, "tags": body.tags, "segmento": body.segmento,
+                "emails": body.emails, "campaign_id": body.campaign_id},
+        daemon=True).start()
     return {"status": "analisando"}
+
+
+@app.post("/api/nomes/cancel")
+def nomes_cancel():
+    """Destrava lock zumbi ou pede cancelamento ao worker vivo."""
+    p = _nomes_progresso()
+    if p.get("status") != "analisando":
+        return {"status": p.get("status") or "idle", "ok": True,
+                "msg": "nenhuma análise em andamento"}
+    _nomes_set(
+        cancel=True,
+        status="erro",
+        etapa="cancelado",
+        erro=("análise cancelada/destravada — clique em Retomar para continuar "
+              f"a partir de {p.get('feitos') or 0}/{p.get('total') or '?'}"),
+    )
+    return {"status": "erro", "ok": True, "feitos": p.get("feitos") or 0,
+            "total": p.get("total") or 0}
 
 
 @app.get("/api/nomes/analise")
@@ -880,11 +1191,30 @@ def nomes_analise():
     return _nomes_progresso()
 
 
+def _name_fixes_counts(c):
+    return {r["status"]: r["n"] for r in c.execute(
+        "SELECT status, COUNT(*) n FROM name_fixes GROUP BY status").fetchall()}
+
+
+def _name_fixes_pendente_stats(c):
+    """Distribuição de confiança das propostas ainda pendentes (para UI de lote)."""
+    rows = c.execute(
+        """SELECT ROUND(confianca, 2) AS conf, COUNT(*) AS n
+           FROM name_fixes WHERE status='pendente'
+           GROUP BY ROUND(confianca, 2)
+           ORDER BY conf DESC"""
+    ).fetchall()
+    por_conf = {float(r["conf"]): int(r["n"]) for r in rows}
+    max_conf = max(por_conf) if por_conf else None
+    return {"por_conf_pendente": por_conf, "max_conf_pendente": max_conf}
+
+
 @app.get("/api/nomes/propostas")
 def nomes_propostas(status: str = "pendente", min_conf: float = 0.0, acao: str = ""):
     c = db.conn()
-    q = """SELECT nf.email, nf.nome_atual, nf.nome_sugerido, nf.acao, nf.confianca, nf.motivo,
-                  nf.status, ct.empresa
+    q = """SELECT nf.email, nf.nome_atual, nf.nome_sugerido, nf.empresa_sugerida,
+                  nf.cargo_sugerido, nf.telefone_sugerido, nf.campos_json,
+                  nf.acao, nf.confianca, nf.motivo, nf.status, nf.auto, ct.empresa
            FROM name_fixes nf LEFT JOIN contacts ct ON ct.email=nf.email WHERE 1=1"""
     args = []
     if status:
@@ -895,14 +1225,17 @@ def nomes_propostas(status: str = "pendente", min_conf: float = 0.0, acao: str =
         q += " AND nf.confianca>=?"; args.append(min_conf)
     q += " ORDER BY nf.acao, nf.confianca DESC"
     rows = [dict(r) for r in c.execute(q, args).fetchall()]
-    counts = {r["status"]: r["n"] for r in c.execute(
-        "SELECT status, COUNT(*) n FROM name_fixes GROUP BY status").fetchall()}
+    counts = _name_fixes_counts(c)
+    stats = _name_fixes_pendente_stats(c)
     c.close()
-    return {"total": len(rows), "propostas": rows, "counts": counts}
+    return {"total": len(rows), "propostas": rows, "counts": counts, "stats": stats}
 
 
 class EditarProposta(BaseModel):
     nome_sugerido: Optional[str] = None
+    empresa_sugerida: Optional[str] = None
+    cargo_sugerido: Optional[str] = None
+    telefone_sugerido: Optional[str] = None
     acao: Optional[str] = None
     status: Optional[str] = None
 
@@ -917,7 +1250,13 @@ def nomes_editar_proposta(email: str, b: EditarProposta):
     campos, vals = [], []
     if b.nome_sugerido is not None:
         campos.append("nome_sugerido=?"); vals.append(b.nome_sugerido.strip())
-    if b.acao in ("manter", "corrigir", "limpar"):
+    if b.empresa_sugerida is not None:
+        campos.append("empresa_sugerida=?"); vals.append(b.empresa_sugerida.strip())
+    if b.cargo_sugerido is not None:
+        campos.append("cargo_sugerido=?"); vals.append(b.cargo_sugerido.strip())
+    if b.telefone_sugerido is not None:
+        campos.append("telefone_sugerido=?"); vals.append(b.telefone_sugerido.strip())
+    if b.acao in ("manter", "corrigir", "limpar", "enriquecer"):
         campos.append("acao=?"); vals.append(b.acao)
     if b.status in ("pendente", "aprovado", "rejeitado"):
         campos.append("status=?"); vals.append(b.status)
@@ -937,30 +1276,134 @@ class AprovarLote(BaseModel):
 @app.post("/api/nomes/aprovar-lote")
 def nomes_aprovar_lote(b: AprovarLote):
     c = db.conn()
-    cur = c.execute("UPDATE name_fixes SET status='aprovado' WHERE status='pendente' AND confianca>=?",
-                    (b.min_conf,))
-    c.commit()
-    n = cur.rowcount
+    min_conf = float(b.min_conf)
+    stats = _name_fixes_pendente_stats(c)
+    elegiveis = c.execute(
+        "SELECT COUNT(*) FROM name_fixes WHERE status='pendente' AND confianca>=?",
+        (min_conf,)).fetchone()[0]
+    if elegiveis:
+        c.execute(
+            "UPDATE name_fixes SET status='aprovado' WHERE status='pendente' AND confianca>=?",
+            (min_conf,))
+        c.commit()
+    counts = _name_fixes_counts(c)
     c.close()
-    return {"aprovados": n}
+    return {
+        "aprovados": int(elegiveis),
+        "min_conf": min_conf,
+        "max_conf_pendente": stats.get("max_conf_pendente"),
+        "counts": counts,
+    }
 
 
 @app.post("/api/nomes/aplicar")
 def nomes_aplicar():
-    """Aplica em contacts.nome todas as propostas 'aprovado'. corrigir→nome_sugerido, limpar→''.
-    Só altera o campo nome — nada é enviado."""
+    """Aplica propostas 'aprovado' em contacts (nome/empresa/cargo/telefone). Nada é enviado."""
     c = db.conn()
     aprovadas = c.execute(
-        "SELECT email, nome_sugerido, acao FROM name_fixes WHERE status='aprovado'").fetchall()
+        """SELECT email, nome_sugerido, empresa_sugerida, cargo_sugerido,
+                  telefone_sugerido, acao FROM name_fixes WHERE status='aprovado'""").fetchall()
     aplicados = 0
     for r in aprovadas:
-        novo = "" if r["acao"] == "limpar" else (r["nome_sugerido"] or "").strip()
-        c.execute("UPDATE contacts SET nome=? WHERE email=?", (novo, r["email"]))
-        c.execute("UPDATE name_fixes SET status='aplicado' WHERE email=?", (r["email"],))
+        email = r["email"]
+        row = c.execute(
+            "SELECT nome,empresa,cargo,telefone FROM contacts WHERE email=?",
+            (email,)).fetchone()
+        contato = dict(row) if row else {}
+        decisao = {
+            "acao": r["acao"],
+            "nome_sugerido": r["nome_sugerido"] or "",
+            "empresa_sugerida": r["empresa_sugerida"] or "",
+            "cargo_sugerido": r["cargo_sugerido"] or "",
+            "telefone_sugerido": r["telefone_sugerido"] or "",
+        }
+        # limpar zera nome; corrigir/enriquecer grava sugestões não vazias
+        if r["acao"] == "limpar":
+            c.execute("UPDATE contacts SET nome='' WHERE email=?", (email,))
+        else:
+            novo = (r["nome_sugerido"] or "").strip()
+            if novo and novo != (contato.get("nome") or "").strip():
+                c.execute("UPDATE contacts SET nome=? WHERE email=?", (novo, email))
+        for col, key in (("empresa", "empresa_sugerida"), ("cargo", "cargo_sugerido"),
+                         ("telefone", "telefone_sugerido")):
+            sug = (decisao.get(key) or "").strip()
+            atual = (contato.get(col) or "").strip()
+            if sug and sug != atual:
+                c.execute(f"UPDATE contacts SET {col}=? WHERE email=?", (sug, email))
+        c.execute("UPDATE name_fixes SET status='aplicado', auto=0 WHERE email=?", (email,))
         aplicados += 1
     c.commit()
+    counts = _name_fixes_counts(c)
     c.close()
-    return {"aplicados": aplicados}
+    return {"aplicados": aplicados, "counts": counts}
+
+
+# ---------------- qualidade: validação / evidência de leads ----------------
+
+class ValidarLeadsBody(BaseModel):
+    origem: Optional[str] = None
+    tags: Optional[str] = None
+    segmento: Optional[str] = None
+    emails: Optional[List[str]] = None
+    campaign_id: Optional[int] = None
+
+
+class LeadEvidenceBody(BaseModel):
+    email: str
+    payload: dict
+    job_id: Optional[str] = ""
+
+
+@app.post("/api/leads/validar")
+def leads_validar(b: Optional[ValidarLeadsBody] = None):
+    """Inicia validação Firecrawl+Vertex em background. HTTP 202 + job_id."""
+    body = b or ValidarLeadsBody()
+    if body.campaign_id:
+        ok, msg = campaign_guard_gate.allow_campaign_llm(body.campaign_id)
+        if not ok:
+            return JSONResponse({"erro": f"campaign-guard bloqueou: {msg}"}, status_code=429)
+    res = leads.start_validacao(
+        origem=body.origem, tags=body.tags, segmento=body.segmento,
+        emails=body.emails, campaign_id=body.campaign_id)
+    if res.get("status") == 409 or res.get("erro"):
+        return JSONResponse({"erro": res.get("erro", "conflito")}, status_code=409)
+    return JSONResponse(res, status_code=202)
+
+
+@app.get("/api/leads/validacao")
+def leads_validacao_status():
+    prog = leads.progresso_validacao()
+    c = db.conn()
+    rows = c.execute(
+        """SELECT validacao_status AS s, COUNT(*) n FROM contacts
+           WHERE TRIM(COALESCE(validacao_status,''))!='' GROUP BY validacao_status"""
+    ).fetchall()
+    c.close()
+    contagens = {r["s"]: r["n"] for r in rows}
+    return {**prog, "contagens_crm": contagens}
+
+
+@app.post("/api/leads/evidence")
+def leads_evidence(b: LeadEvidenceBody, request: Request):
+    """Interno: Worker/lead-quality grava evidência Firecrawl e dispara lead_validator."""
+    sync = (request.headers.get("X-Sync-Key") or "").strip()
+    expected = (
+        vertex.env_get("LEAD_QUALITY_SYNC_KEY", "")
+        or vertex.env_get("TRACKING_SYNC_KEY", "")
+        or API_KEY
+    )
+    # Middleware já exige X-API-Key; Sync-Key reforça origem Worker quando configurada.
+    if expected and sync and sync != expected and request.headers.get("X-API-Key") != API_KEY:
+        return JSONResponse({"erro": "X-Sync-Key inválida"}, status_code=401)
+    email = (b.email or "").strip().lower()
+    if not email or not isinstance(b.payload, dict):
+        return JSONResponse({"erro": "email e payload obrigatórios"}, status_code=400)
+    try:
+        res = leads.apply_evidence_and_validate(email, b.payload, job_id=b.job_id or "")
+    except Exception as e:
+        return JSONResponse({"erro": str(e)[:260]}, status_code=502)
+    return {"ok": True, "email": email, "status": res.get("status"),
+            "motivo": res.get("motivo", "")}
 
 
 # ---------------- templates ----------------
@@ -981,8 +1424,18 @@ def templates():
     return {"total": len(out), "templates": out}
 
 
+def _preview_headers(assunto: str = "") -> dict:
+    assunto_hdr = (assunto or "").encode("ascii", "ignore").decode()
+    return {
+        "X-Assunto": assunto_hdr,
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Pragma": "no-cache",
+    }
+
+
 @app.get("/api/templates/preview")
-def template_preview(ref: str, email: str = ""):
+def template_preview(ref: str, email: str = "", bh: str = "", _: str = ""):
+    """bh/_ são só cache-busters do front (hash do corpo / timestamp)."""
     contato = None
     if email:
         c = db.conn()
@@ -992,7 +1445,34 @@ def template_preview(ref: str, email: str = ""):
     assunto, html = engine.render_html(ref, contato)
     if html is None:
         return JSONResponse({"erro": f"template {ref} não encontrado"}, status_code=404)
-    return HTMLResponse(html, headers={"X-Assunto": assunto.encode("ascii", "ignore").decode()})
+    return HTMLResponse(html, headers=_preview_headers(assunto))
+
+
+class PreviewDraft(BaseModel):
+    preheader: Optional[str] = ""
+    cta: Optional[str] = ""
+    cta_url: Optional[str] = ""
+    inner_html: str = ""
+    email: Optional[str] = ""
+
+
+@app.post("/api/templates/preview-draft")
+def template_preview_draft(body: PreviewDraft):
+    """Renderiza um miolo ainda não salvo (prévia ao vivo no editor)."""
+    contato = None
+    if body.email:
+        c = db.conn()
+        row = c.execute("SELECT * FROM contacts WHERE email=?", (body.email.lower(),)).fetchone()
+        c.close()
+        contato = dict(row) if row else None
+    html = engine.render_draft_html(
+        preheader=body.preheader or "",
+        inner_html=body.inner_html or "",
+        cta=body.cta or "",
+        cta_url=body.cta_url or "",
+        contato=contato,
+    )
+    return HTMLResponse(html, headers=_preview_headers(""))
 
 
 class Briefing(BaseModel):
@@ -1009,10 +1489,61 @@ def template_ai_create(b: Briefing):
 @app.post("/api/templates/{tid}/approve")
 def template_approve(tid: int):
     c = db.conn()
+    row = c.execute("SELECT campaign_id FROM templates_ai WHERE id=?", (tid,)).fetchone()
+    if row and row["campaign_id"]:
+        blocked = _guard_campaign_mutation(int(row["campaign_id"]))
+        if blocked:
+            c.close()
+            return blocked
     c.execute("UPDATE templates_ai SET status='aprovado' WHERE id=?", (tid,))
     c.commit()
     c.close()
     return {"id": tid, "status": "aprovado"}
+
+
+@app.post("/api/campaigns/{cid}/approve-templates")
+def campaign_approve_templates(cid: int):
+    """Aprova em lote todos os templates AI ainda pendentes da sequência da campanha."""
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
+    c = db.conn()
+    camp = c.execute("SELECT id FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if not camp:
+        c.close()
+        return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
+    refs = [r["template_ref"] for r in c.execute(
+        "SELECT template_ref FROM campaign_steps WHERE campaign_id=? ORDER BY ordem",
+        (cid,)).fetchall()]
+    aprovados, ja_ok, ignorados = [], [], []
+    for ref in refs:
+        if not str(ref).startswith("ai:"):
+            ignorados.append(ref)
+            continue
+        try:
+            tid = int(str(ref).split(":", 1)[1])
+        except ValueError:
+            ignorados.append(ref)
+            continue
+        row = c.execute("SELECT status FROM templates_ai WHERE id=?", (tid,)).fetchone()
+        if not row:
+            ignorados.append(ref)
+            continue
+        if row["status"] == "aprovado":
+            ja_ok.append(ref)
+            continue
+        c.execute("UPDATE templates_ai SET status='aprovado' WHERE id=?", (tid,))
+        aprovados.append(ref)
+    c.commit()
+    c.close()
+    try:
+        checklist = ai.rodar_checklist(cid)
+    except Exception:
+        checklist = None
+    return {"id": cid, "aprovados": aprovados, "ja_aprovados": ja_ok,
+            "ignorados": ignorados, "checklist": checklist,
+            "nota": (f"{len(aprovados)} template(s) aprovado(s)"
+                     + (f", {len(ja_ok)} já estavam ok" if ja_ok else ""))}
 
 
 @app.get("/api/templates/{tid}/raw")
@@ -1051,25 +1582,63 @@ def template_edit(tid: int, body: EditarTemplate):
     if not campos:
         return JSONResponse({"erro": "nada para atualizar"}, status_code=400)
     c = db.conn()
-    row = c.execute("SELECT status FROM templates_ai WHERE id=?", (tid,)).fetchone()
+    row = c.execute("SELECT status, campaign_id FROM templates_ai WHERE id=?", (tid,)).fetchone()
     if not row:
         c.close()
         return JSONResponse({"erro": "template não encontrado"}, status_code=404)
+    if row["campaign_id"]:
+        blocked = _guard_campaign_mutation(int(row["campaign_id"]))
+        if blocked:
+            c.close()
+            return blocked
+    ref = f"ai:{tid}"
     ativa = c.execute("""SELECT cp.id, cp.nome FROM campaign_steps cs
                          JOIN campaigns cp ON cp.id=cs.campaign_id
                          WHERE cs.template_ref=? AND cp.status='ativa' LIMIT 1""",
-                      (f"ai:{tid}",)).fetchone()
+                      (ref,)).fetchone()
     if ativa:
         c.close()
         return JSONResponse({"erro": f"pause a campanha ativa '{ativa['nome']}' antes de editar este e-mail"},
                             status_code=409)
+    # Campanhas que usam este template (para travar se houver rewrite em andamento e
+    # para marcar a campanha como atualizada — a UI da sequência lê daqui).
+    camp_rows = c.execute("""SELECT DISTINCT cp.id, cp.versao FROM campaign_steps cs
+                             JOIN campaigns cp ON cp.id=cs.campaign_id
+                             WHERE cs.template_ref=?""", (ref,)).fetchall()
+    for camp in camp_rows:
+        prog = ai.build_progress(camp["id"]) or {}
+        if prog.get("status") == "gerando":
+            c.close()
+            return JSONResponse({
+                "erro": ("a IA ainda está regenerando os e-mails desta campanha — "
+                         "aguarde terminar (ou cancele a geração) antes de editar manualmente"),
+                "campaign_id": camp["id"],
+            }, status_code=409)
     novo_status = "pendente" if row["status"] == "aprovado" else row["status"]
     campos.append("status=?")
     vals.append(novo_status)
+    # Alinha versao_campanha com a campanha dona (ou a maior versão entre as que usam o ref).
+    versoes = [int(r["versao"] or 1) for r in camp_rows]
+    if versoes:
+        campos.append("versao_campanha=?")
+        vals.append(max(versoes))
+    if camp_rows and not row["campaign_id"]:
+        campos.append("campaign_id=?")
+        vals.append(camp_rows[0]["id"])
     c.execute(f"UPDATE templates_ai SET {', '.join(campos)} WHERE id=?", (*vals, tid))
+    agora = db.now()
+    for camp in camp_rows:
+        c.execute("UPDATE campaigns SET atualizada_em=? WHERE id=?", (agora, camp["id"]))
     c.commit()
+    updated = c.execute("""SELECT id,nome,assunto,preheader,cta,cta_url,inner_html,texto_plano,
+                                  status,versao_campanha,campaign_id
+                           FROM templates_ai WHERE id=?""", (tid,)).fetchone()
     c.close()
-    return {"id": tid, "status": novo_status}
+    out = dict(updated) if updated else {"id": tid, "status": novo_status}
+    out["ref"] = ref
+    out["campaign_ids"] = [r["id"] for r in camp_rows]
+    out["cta_shell_ignored"] = bool(engine._inner_tem_botao(out.get("inner_html") or ""))
+    return out
 
 
 @app.post("/api/campaigns/{cid}/steps/{ordem}/make-editable")
@@ -1079,6 +1648,9 @@ def campaign_step_make_editable(cid: int, ordem: int):
     Nunca sobrescreve a biblioteca base: a cópia nasce pendente e deve ser
     revisada antes de (re)ativar a campanha.
     """
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
     c = db.conn()
     camp = c.execute("SELECT status FROM campaigns WHERE id=?", (cid,)).fetchone()
     step = c.execute("SELECT * FROM campaign_steps WHERE campaign_id=? AND ordem=?", (cid, ordem)).fetchone()
@@ -1210,6 +1782,11 @@ def _campaign_payload(c, camp):
               "sender": {"id": sender.get("id"), "email": sender.get("email"),
                          "nome": sender.get("nome"), "proposito": sender.get("proposito")}})
     d["export_docx"] = bool(export_campanha.HAS_DOCX)
+    origem = _campaign_origem(camp)
+    d["origem_ambiente"] = origem
+    d["somente_acompanhamento"] = _somente_acompanhamento(origem)
+    d["precisa_decisao"] = _precisa_decisao_import(origem)
+    d["dashboard_env"] = db.dashboard_env()
     return d
 
 
@@ -1266,6 +1843,9 @@ class SugestaoBody(BaseModel):
 def campaigns_suggest(b: SugestaoBody):
     """Dispara o loop estrategista GTM + crítica do copywriter em background.
     Tudo termina em rascunho; nada é ativado ou enviado automaticamente."""
+    blocked = _guard_campaign_create()
+    if blocked:
+        return blocked
     return ai.iniciar_sugestao(b.max_campanhas, b.auto_gerar, b.sender_id)
 
 
@@ -1278,6 +1858,9 @@ def campaigns_suggest_status():
 @app.post("/api/campaigns/suggest/generate")
 def campaigns_suggest_generate(b: SugestaoBody):
     """Gera os rascunhos do portfólio já sugerido (sequencial, em background)."""
+    blocked = _guard_campaign_create()
+    if blocked:
+        return blocked
     try:
         return ai.iniciar_geracao_portfolio(b.sender_id)
     except RuntimeError as ex:
@@ -1324,15 +1907,22 @@ class EditarCampanha(BaseModel):
     cad_min: Optional[int] = None
     cad_max: Optional[int] = None
     inicio_em: Optional[str] = None
+    # Regeneração é opt-in. Mudar só horário/cadência/nome NÃO recria e-mails.
+    regenerar: bool = False
 
 
 @app.patch("/api/campaigns/{cid}")
 def campaign_edit(cid: int, body: EditarCampanha):
-    """Edita o planejamento de uma campanha sem alterar sua audiência ou sequência.
+    """Edita o planejamento (nome/objetivo/cadência/remetente/horário).
 
-    Campanhas ativas precisam ser pausadas primeiro: evita mudar cadência/remetente no
-    meio de uma fila já agendada. Alterações de segmento são uma ação separada, visível.
+    Regenera e-mails só quando ``regenerar=True`` **e** o objetivo mudou.
+    Alterar somente o 1º envio / cadência / nome / remetente nunca dispara IA.
+
+    Campanhas ativas precisam ser pausadas primeiro.
     """
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
     nome, objetivo = body.nome.strip(), body.objetivo.strip()
     if not nome or not objetivo:
         return JSONResponse({"erro": "nome e objetivo são obrigatórios"}, status_code=422)
@@ -1344,7 +1934,9 @@ def campaign_edit(cid: int, body: EditarCampanha):
     if (cad_min is None) != (cad_max is None) or (cad_min and cad_max and cad_min > cad_max):
         return JSONResponse({"erro": "informe uma cadência válida (mínimo menor ou igual ao máximo)"}, status_code=422)
     c = db.conn()
-    camp = c.execute("SELECT status FROM campaigns WHERE id=?", (cid,)).fetchone()
+    camp = c.execute(
+        "SELECT status, objetivo FROM campaigns WHERE id=?", (cid,)
+    ).fetchone()
     if not camp:
         c.close()
         return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
@@ -1355,15 +1947,77 @@ def campaign_edit(cid: int, body: EditarCampanha):
     if not sender:
         c.close()
         return JSONResponse({"erro": "remetente não encontrado"}, status_code=422)
+    n_steps = c.execute(
+        "SELECT COUNT(*) AS n FROM campaign_steps WHERE campaign_id=?", (cid,)
+    ).fetchone()["n"]
+    objetivo_antes = (camp["objetivo"] or "").strip()
+    objetivo_alterado = objetivo != objetivo_antes
+    # Segurança: regenerar só com objetivo novo. Horário/cadência sozinhos nunca disparam IA.
+    deve_regenerar = bool(body.regenerar) and objetivo_alterado
+    agora = db.now()
     c.execute("""UPDATE campaigns
-                 SET nome=?, objetivo=?, sender_id=?, tipo=?, cad_min_dias=?, cad_max_dias=?, inicio_em=?
+                 SET nome=?, objetivo=?, sender_id=?, tipo=?, cad_min_dias=?, cad_max_dias=?,
+                     inicio_em=?, atualizada_em=?
                  WHERE id=?""",
               (nome, objetivo, body.sender_id, body.tipo, cad_min, cad_max,
-               _normaliza_dt(body.inicio_em), cid))
+               _normaliza_dt(body.inicio_em), agora, cid))
+    if deve_regenerar and n_steps:
+        c.execute(
+            """UPDATE campaigns SET contexto=? WHERE id=? AND (
+                 contexto IS NULL OR contexto='' OR contexto LIKE 'A IA está%'
+                 OR contexto LIKE 'Objetivo atualizado%')""",
+            ("Objetivo atualizado — regenerando e-mails…", cid))
     c.commit()
     c.close()
-    return {"id": cid, "status": "atualizada",
-            "nota": "Planejamento atualizado. A audiência e os e-mails permanecem iguais."}
+
+    regenerando = False
+    nota = "Planejamento atualizado."
+    if body.regenerar and not objetivo_alterado:
+        nota = ("Planejamento atualizado. E-mails mantidos — o objetivo não mudou "
+                "(alterar só o horário/cadência não regenera).")
+    elif deve_regenerar and n_steps:
+        # Libera build travado (gerando/stale/erro) antes de disparar a reescrita.
+        prog = ai.build_progress(cid) or {}
+        if prog.get("status") == "gerando":
+            ai.interromper_geracao(cid, "operador salvou novo objetivo — regenerando")
+            time.sleep(0.4)
+        try:
+            diretrizes = (
+                "OBJETIVO ATUALIZADO PELO OPERADOR (prioridade máxima).\n"
+                "Reescreva TODOS os e-mails para aderir a este objetivo. "
+                "Atualize também o Resumo/Planejamento da campanha.\n\n"
+                f"{objetivo}"
+            )
+            ai.reescrever_campanha(cid, diretrizes, None)
+            regenerando = True
+            nota = ("Objetivo salvo. Regenerando os e-mails com o novo objetivo — "
+                    "acompanhe na tela da campanha.")
+        except ValueError as ex:
+            return JSONResponse({
+                "id": cid, "status": "parcial",
+                "erro": str(ex),
+                "nota": f"Objetivo salvo, mas a regeneração não iniciou: {ex}",
+            }, status_code=409)
+    elif deve_regenerar and not n_steps:
+        # Sem e-mails ainda: retoma/cria build se estiver em erro; senão só salva.
+        prog = ai.build_progress(cid) or {}
+        if prog.get("status") in ("erro",) or (prog.get("status") == "gerando" and prog.get("stale")):
+            try:
+                if prog.get("status") == "gerando":
+                    ai.interromper_geracao(cid, "operador salvou novo objetivo")
+                ai.retomar_campanha(cid)
+                regenerando = True
+                nota = "Objetivo salvo. Retomando a criação dos e-mails…"
+            except Exception as ex:
+                nota = f"Objetivo salvo. Geração não retomada: {ex}"
+        else:
+            nota = "Objetivo salvo. A campanha ainda não tem e-mails — use Retomar criação se a geração parou."
+    elif not body.regenerar:
+        nota = "Planejamento atualizado. E-mails não foram regenerados."
+
+    return {"id": cid, "status": "gerando" if regenerando else "atualizada",
+            "regenerando": regenerando, "objetivo_alterado": objetivo_alterado,
+            "nota": nota}
 
 
 @app.get("/api/audience")
@@ -1395,6 +2049,9 @@ def _normaliza_dt(s):
 
 @app.post("/api/campaigns/ai-create")
 def campaign_ai_create(nc: NovaCampanha):
+    blocked = _guard_campaign_create()
+    if blocked:
+        return blocked
     if nc.tipo == "infinita" and nc.cad_min is None:
         nc.cad_min, nc.cad_max = 7, 14
     cid = ai.criar_campanha(nc.objetivo, nc.tipo, nc.cad_min, nc.cad_max,
@@ -1421,7 +2078,14 @@ class CampanhaTemplate(BaseModel):
 
 @app.post("/api/campaigns/from-template")
 def campaign_from_template(b: CampanhaTemplate):
-    """Cria uma campanha a partir de um template existente (sem IA) — 1 etapa = o template."""
+    """Cria uma campanha a partir de um template existente (sem IA) — 1 etapa = o template.
+
+    Sempre clona para um `templates_ai` exclusivo da campanha. Assim editar/salvar
+    nesta campanha não altera a biblioteca nem outras campanhas que usem o mesmo original.
+    """
+    blocked = _guard_campaign_create()
+    if blocked:
+        return blocked
     t = engine.template_get(b.template_ref)
     if not t:
         return JSONResponse({"erro": "template não encontrado"}, status_code=404)
@@ -1430,16 +2094,25 @@ def campaign_from_template(b: CampanhaTemplate):
         cad_min, cad_max = 7, 14
     nome = (b.nome or "").strip() or f"Campanha — {(t.get('nome') or t.get('assunto') or 'template')[:50]}"
     c = db.conn()
-    c.execute("""INSERT INTO campaigns(nome,objetivo,tipo,status,cad_min_dias,cad_max_dias,contexto,sender_id,inicio_em,audience_profile)
-                 VALUES(?,?,?,'rascunho',?,?,?,?,?,?)""",
+    c.execute("""INSERT INTO campaigns(nome,objetivo,tipo,status,cad_min_dias,cad_max_dias,contexto,sender_id,inicio_em,audience_profile,origem_ambiente)
+                 VALUES(?,?,?,'rascunho',?,?,?,?,?,?,?)""",
               (nome, f"Campanha a partir do template '{t.get('nome') or t.get('assunto')}'", b.tipo,
                cad_min, cad_max, "Criada a partir de template existente", b.sender_id or 1,
-               _normaliza_dt(b.inicio_em), b.audience_profile or ""))
+               _normaliza_dt(b.inicio_em), b.audience_profile or "", db.dashboard_env()))
     cid = c.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
+    # Clone exclusivo — nunca compartilha o ref da biblioteca/base.
+    c.execute("""INSERT INTO templates_ai(nome,assunto,preheader,cta,cta_url,inner_html,texto_plano,
+                                          status,origem,assuntos_alt,campaign_id,versao_campanha)
+                 VALUES(?,?,?,?,?,?,?,'pendente','campanha',?,?,1)""",
+              (t.get("nome") or f"E-mail 1", t.get("assunto") or "", t.get("preheader") or "",
+               t.get("cta") or "", t.get("cta_url") or "", t.get("inner_html") or "",
+               t.get("texto_plano") or "", t.get("assuntos_alt") or "[]", cid))
+    tid = c.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
+    step_ref = f"ai:{tid}"
     # finita de 1 toque = D+0; infinita usa a cadência (offset NULL)
     offset = 0 if b.tipo == "finita" else None
     c.execute("INSERT INTO campaign_steps(campaign_id,ordem,template_ref,offset_dias) VALUES(?,1,?,?)",
-              (cid, b.template_ref, offset))
+              (cid, step_ref, offset))
     segs = b.segmentos if b.segmentos else ["quente", "morno", "frio"]
     n = 0
     for email in db.resolve_audience(segs, b.tags, b.apenas_sem_resposta, perfil=b.audience_profile or ""):
@@ -1447,13 +2120,22 @@ def campaign_from_template(b: CampanhaTemplate):
         n += 1
     c.commit()
     c.close()
-    return {"id": cid, "status": "rascunho", "contatos": n,
-            "aprovado": t.get("status") == "aprovado",
-            "nota": "Campanha criada a partir do template. Revise e ative quando quiser."}
+    return {"id": cid, "status": "rascunho", "contatos": n, "template_ref": step_ref,
+            "aprovado": False,
+            "nota": "Campanha criada com cópia editável do template. Revise, aprove e ative quando quiser."}
 
 
 class AtivarBody(BaseModel):
-    confirmacao: str = ""                 # "QUERO_ENVIAR" libera campanha que toca clientes
+    # QUERO_ENVIAR = clientes protegidos;
+    # ENVIAR_COM_PENDENCIAS = soft gates (templates/checklist/patches) — CHECKLIST_OK aceito como alias
+    confirmacao: str = ""
+    # True = 1ª etapa agora (ignora inicio_em + janela comercial via immediate=True)
+    imediato: bool = False
+
+
+class ChecklistItemPatch(BaseModel):
+    status: str                           # pending | done | failed | skipped
+    evidence: Optional[str] = None
 
 
 class TesteCampanhaBody(BaseModel):
@@ -1470,6 +2152,9 @@ def campaign_test_send(cid: int, body: TesteCampanhaBody):
     eventos à campanha para permitir um teste ponta a ponta do funil. A amostra
     continua fora de ``campaign_contacts`` e nunca inicia a cadência.
     """
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
     email = (body.email or "").strip().lower()
     if not sync.EMAIL_RE.match(email):
         return JSONResponse({"erro": "e-mail de teste inválido"}, status_code=422)
@@ -1519,26 +2204,149 @@ def campaign_test_send(cid: int, body: TesteCampanhaBody):
 
 @app.post("/api/campaigns/{cid}/activate")
 def campaign_activate(cid: int, body: Optional[AtivarBody] = None):
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
     c = db.conn()
     camp = c.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
     if not camp:
         c.close()
         return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
+    confirmacao = (body.confirmacao if body else "").strip()
+    soft_token = confirmacao in ("ENVIAR_COM_PENDENCIAS", "CHECKLIST_OK")
+    if soft_token:
+        db.meta_set(f"soft_activate_override_{cid}", db.now())
+    # Meta cobre o 2º passo (QUERO_ENVIAR) após confirmar ressalvas soft
+    soft_ok = soft_token or bool(db.meta_get(f"soft_activate_override_{cid}", ""))
+
+    # Hard: build ainda gerando (não há e-mail pronto)
+    build = {}
+    try:
+        build = json.loads(db.meta_get(f"build_{cid}", "") or "{}") or {}
+    except Exception:
+        build = {}
+    if (build.get("status") or "") == "gerando":
+        c.close()
+        return JSONResponse({
+            "erro": "a geração/reescrita ainda está em andamento — aguarde ou use Retomar criação",
+            "build": build,
+        }, status_code=409)
+
+    # Soft pendências (templates / checklist / patches / run) — não bloqueiam sem token
     nao_aprovados = [s["template_ref"] for s in c.execute(
         "SELECT template_ref FROM campaign_steps WHERE campaign_id=?", (cid,)).fetchall()
         if (engine.template_get(s["template_ref"]) or {}).get("status") != "aprovado"]
+    try:
+        ai.rodar_checklist(cid)
+        cl, pend_cl = ai.checklist_incomplete_items(cid)
+    except ValueError:
+        cl, pend_cl = {"ready": True, "items": []}, []
+    except Exception:
+        try:
+            cl, pend_cl = ai.checklist_incomplete_items(cid)
+        except ValueError:
+            cl, pend_cl = {"ready": True, "items": []}, []
+    soft_pending = []
     if nao_aprovados:
+        soft_pending.append({
+            "key": "templates",
+            "title": f"{len(nao_aprovados)} template(s) não aprovado(s)",
+            "detail": ", ".join(nao_aprovados[:8]),
+        })
+    if pend_cl:
+        soft_pending.append({
+            "key": "checklist",
+            "title": f"Checklist incompleto ({len(pend_cl)} item(ns))",
+            "detail": "; ".join((x.get("label") or x.get("id") or "")[:50] for x in pend_cl[:5]),
+        })
+    active_run = c.execute(
+        """SELECT id, status FROM improvement_runs
+           WHERE campaign_id=? AND status IN ('pending','planning','running',
+             'queued','applying') ORDER BY id DESC LIMIT 1""", (cid,)).fetchone()
+    if active_run:
+        soft_pending.append({
+            "key": "run_ativo",
+            "title": f"Run de melhorias ativo #{active_run['id']}",
+            "detail": active_run["status"] or "",
+        })
+    n_patches = c.execute(
+        """SELECT COUNT(*) n FROM improvement_tasks
+           WHERE campaign_id=? AND status='awaiting_approval'""", (cid,)).fetchone()["n"]
+    if n_patches:
+        soft_pending.append({
+            "key": "patches",
+            "title": f"{n_patches} patch(es) aguardando aprovação",
+            "detail": "recomendado aprovar/rejeitar antes",
+        })
+    if soft_pending and not soft_ok:
         c.close()
-        return JSONResponse({"erro": "todos os templates precisam estar aprovados antes de ativar",
-                             "pendentes": nao_aprovados}, status_code=409)
-    # à prova de erros: o remetente da campanha precisa estar conectado
+        return JSONResponse({
+            "erro": (f"Há {len(soft_pending)} pendência(s) recomendada(s). "
+                     "Resolva no guia ou confirme com ENVIAR_COM_PENDENCIAS."),
+            "requer_soft_confirm": True,
+            "token": "ENVIAR_COM_PENDENCIAS",
+            "soft_pending": soft_pending,
+            "pendentes": [{"id": x.get("id"), "label": x.get("label"),
+                           "status": x.get("status"), "evidence": x.get("evidence")}
+                          for x in pend_cl],
+            "templates_pendentes": nao_aprovados,
+            "checklist": cl,
+        }, status_code=409)
+
+    if soft_ok and soft_pending:
+        # Motor de envio exige template aprovado — carimba pendentes no bypass
+        if nao_aprovados:
+            for ref in nao_aprovados:
+                if not str(ref).startswith("ai:"):
+                    continue
+                try:
+                    tid = int(str(ref).split(":", 1)[1])
+                except ValueError:
+                    continue
+                c.execute("UPDATE templates_ai SET status='aprovado' WHERE id=? AND status!='aprovado'",
+                          (tid,))
+            c.commit()
+            engine.log(f"campanha {cid}: {len(nao_aprovados)} template(s) carimbado(s) "
+                       f"via ENVIAR_COM_PENDENCIAS")
+        engine.log(f"campanha {cid}: ativação com ressalvas — "
+                   + "; ".join(p["title"] for p in soft_pending))
+
+    # Hard: remetente conectado
     sender = db.sender_get(camp["sender_id"] or 1) or db.sender_default()
     if sender and not engine.sender_auth_status(sender)["conectado"]:
         c.close()
         return JSONResponse({"erro": f"o remetente {sender['email']} não está conectado — "
                              "conecte a conta na aba Remetentes antes de ativar."}, status_code=409)
+    # Qualidade: exclui desatualizados/inválidos; enfileira stale residual (não bloqueia).
+    report = leads.campaign_validation_report(cid)
+    excluidos = report.get("emails_excluidos") or []
+    if excluidos:
+        for em in excluidos:
+            c.execute(
+                """UPDATE campaign_contacts SET status='desatualizado'
+                   WHERE campaign_id=? AND email=? AND status IN ('pendente','ativo')""",
+                (cid, em))
+        c.commit()
+        engine.log(f"campanha {cid}: {len(excluidos)} contato(s) excluído(s) na ativação "
+                   f"(validação desatualizado/inválido)")
+    if report.get("stale"):
+        try:
+            leads.enqueue_stale_for_campaign(cid)
+        except Exception:
+            pass
+    if report["validos"] == 0:
+        c.close()
+        return JSONResponse({
+            "erro": "nenhum contato válido para envio após validação de qualidade "
+                    "(todos desatualizados, inválidos ou suprimidos). "
+                    "Rode Validar leads na aba Qualidade ou revise a audiência.",
+            "validacao": {
+                "validos": 0, "excluidos": report["excluidos"],
+                "duvidosos": report["duvidosos"], "stale": report["stale"],
+                "amostra": report.get("amostra_excluidos") or [],
+            },
+        }, status_code=409)
     # GUARDRAIL: campanha que toca CLIENTE (ativo/inativo/possível) só ativa com QUERO_ENVIAR
-    confirmacao = (body.confirmacao if body else "").strip()
     prot = db.contatos_cliente_na_campanha(cid)
     if prot["total"] > 0 and confirmacao != "QUERO_ENVIAR":
         c.close()
@@ -1548,7 +2356,11 @@ def campaign_activate(cid: int, body: Optional[AtivarBody] = None):
                      "Para enviar mesmo assim, confirme digitando QUERO_ENVIAR."),
             "requer_confirmacao": True, "token": "QUERO_ENVIAR",
             "clientes": prot["total"], "ativos": prot["ativos"], "inativos": prot["inativos"],
-            "possiveis": prot["possiveis"], "amostra": prot["amostra"]}, status_code=409)
+            "possiveis": prot["possiveis"], "amostra": prot["amostra"],
+            "validacao": {
+                "validos": report["validos"], "excluidos": report["excluidos"],
+                "duvidosos": report["duvidosos"], "stale": report["stale"],
+            }}, status_code=409)
     if prot["total"] > 0:
         c.execute("UPDATE campaigns SET clientes_confirmados=1 WHERE id=?", (cid,))
         engine.log(f"campanha {cid}: QUERO_ENVIAR confirmado pelo Genal — {prot['total']} cliente(s) "
@@ -1556,31 +2368,302 @@ def campaign_activate(cid: int, body: Optional[AtivarBody] = None):
     c.execute("UPDATE campaigns SET status='ativa' WHERE id=?", (cid,))
     c.commit()
     c.close()
+    try:
+        db.meta_set(f"checklist_override_{cid}", "")
+        db.meta_set(f"soft_activate_override_{cid}", "")
+    except Exception:
+        pass
     ensure_runtime_loops()
     _wake.set()  # acorda os loops adormecidos sem esperar o timeout
+    imediato = bool(body and body.imediato)
+    if imediato:
+        # Evita agendar no inicio_em futuro e depois brigar com o disparo imediato.
+        c = db.conn()
+        c.execute("UPDATE campaigns SET inicio_em='' WHERE id=?", (cid,))
+        c.commit()
+        c.close()
     agendados = engine.agendar_campanha(cid)
-    engine.log(f"campanha {cid} ATIVADA pelo Genal — {agendados} contato(s) agendados")
-    # Se o horário já estiver liberado, não espera nem o próximo tick de 10 s.
-    # Roda fora da request para a interface responder imediatamente.
-    threading.Thread(target=engine.process_due_campaign_sends, args=(cid,), daemon=True).start()
+    disparo = {"enfileirados": 0, "processados": 0}
+    if imediato:
+        disparo = engine.forcar_disparo_imediato(cid)
+        agendados = disparo.get("agendados", agendados)
+        engine.log(f"campanha {cid} ATIVADA + DISPARO IMEDIATO — {agendados} contato(s) "
+                   f"(validação: {report['validos']} válidos / {report['excluidos']} excluídos)")
+    else:
+        engine.log(f"campanha {cid} ATIVADA pelo Genal — {agendados} contato(s) agendados "
+                   f"(validação: {report['validos']} válidos / {report['excluidos']} excluídos)")
+        # Se o horário já estiver liberado, não espera nem o próximo tick de 10 s.
+        # Roda fora da request para a interface responder imediatamente.
+        threading.Thread(target=engine.process_due_campaign_sends, args=(cid,), daemon=True).start()
     slug = db.campaign_slug(cid)
     ga4.mp_send_event("email_campaign_activated",
                       {"campaign_id": cid, "campaign_name": camp["nome"], "campaign_slug": slug})
     if not (camp["ads_briefing"] or "").strip():
         def _briefing_bg():
             try:
+                ok_g, msg_g = campaign_guard_gate.allow_campaign_llm(cid)
+                if not ok_g:
+                    engine.log(f"campanha {cid}: briefing Ads bloqueado pelo campaign-guard ({msg_g})")
+                    return
                 c2, s2 = _campanha_e_steps(cid)
                 ai.gerar_briefing_ads(c2, s2)
                 engine.log(f"campanha {cid}: briefing Google Ads gerado na ativação")
             except Exception as e:
                 engine.log(f"campanha {cid}: briefing Ads falhou (gere manualmente): {e}")
         threading.Thread(target=_briefing_bg, daemon=True).start()
-    return {"id": cid, "status": "ativa", "agendados": agendados,
-            "utm": {"utm_source": "4unik-mail", "utm_medium": "email", "utm_campaign": slug}}
+    out = {"id": cid, "status": "ativa", "agendados": agendados,
+           "validacao": {
+               "validos": report["validos"], "excluidos": report["excluidos"],
+               "duvidosos": report["duvidosos"], "stale": report["stale"],
+               "amostra_excluidos": report.get("amostra_excluidos") or [],
+           },
+           "utm": {"utm_source": "4unik-mail", "utm_medium": "email", "utm_campaign": slug}}
+    if imediato:
+        out.update({
+            "imediato": True,
+            "enfileirados": disparo.get("enfileirados", 0),
+            "processados": disparo.get("processados", 0),
+            "nota": (f"1ª etapa disparada agora para {agendados} contato(s). "
+                     "Os próximos e-mails seguem a cadência."),
+        })
+    return out
+
+
+@app.post("/api/campaigns/{cid}/launch-now")
+def campaign_launch_now(cid: int, body: Optional[AtivarBody] = None):
+    """Ativa (se necessário) e dispara a 1ª etapa imediatamente.
+
+    Ignora ``inicio_em`` futuro e a janela comercial via ``immediate=True``.
+    Demais guardrails (remetente, contatos, clientes, soft confirm) continuam iguais.
+    """
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
+    c = db.conn()
+    camp = c.execute("SELECT id, status, nome FROM campaigns WHERE id=?", (cid,)).fetchone()
+    c.close()
+    if not camp:
+        return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
+    if camp["status"] not in {"rascunho", "pausada", "ativa"}:
+        return JSONResponse({"erro": "a campanha está encerrada e não pode ser disparada"},
+                            status_code=409)
+
+    confirmacao = (body.confirmacao if body else "").strip()
+    ativou = False
+    activate_payload = {}
+    if camp["status"] in {"rascunho", "pausada"}:
+        # Mesmo gate de ativação, sem thread paralela de process_due (imediato=True).
+        r = campaign_activate(cid, AtivarBody(confirmacao=confirmacao, imediato=True))
+        if isinstance(r, JSONResponse):
+            return r
+        activate_payload = r if isinstance(r, dict) else {}
+        ativou = True
+        return {
+            "id": cid,
+            "status": "ativa",
+            "ativou": True,
+            "agendados": activate_payload.get("agendados", 0),
+            "enfileirados": activate_payload.get("enfileirados", 0),
+            "processados": activate_payload.get("processados", 0),
+            "validacao": activate_payload.get("validacao"),
+            "nota": activate_payload.get("nota") or (
+                f"1ª etapa disparada agora para {activate_payload.get('agendados', 0)} contato(s). "
+                "Os próximos e-mails seguem a cadência."
+            ),
+        }
+
+    # Campanha já ativa: ainda exige QUERO_ENVIAR se houver clientes sem confirmação.
+    prot = db.contatos_cliente_na_campanha(cid)
+    c = db.conn()
+    camp_full = c.execute(
+        "SELECT clientes_confirmados FROM campaigns WHERE id=?", (cid,)
+    ).fetchone()
+    c.close()
+    if prot["total"] > 0 and not (camp_full and camp_full["clientes_confirmados"]) \
+            and confirmacao != "QUERO_ENVIAR":
+        return JSONResponse({
+            "erro": (f"Esta campanha inclui {prot['total']} cliente(s) 4Unik. "
+                     "Para disparar agora, digite QUERO_ENVIAR."),
+            "requer_confirmacao": True, "token": "QUERO_ENVIAR",
+            "clientes": prot["total"], "ativos": prot["ativos"],
+            "inativos": prot["inativos"], "possiveis": prot["possiveis"],
+        }, status_code=409)
+    if prot["total"] > 0 and confirmacao == "QUERO_ENVIAR":
+        c = db.conn()
+        c.execute("UPDATE campaigns SET clientes_confirmados=1 WHERE id=?", (cid,))
+        c.commit()
+        c.close()
+    ensure_runtime_loops()
+    _wake.set()
+
+    disparo = engine.forcar_disparo_imediato(cid)
+    engine.log(
+        f"campanha {cid} DISPARO IMEDIATO pelo Genal — "
+        f"{disparo.get('agendados', 0)} contato(s) na 1ª etapa (já estava ativa)"
+    )
+    return {
+        "id": cid,
+        "status": "ativa",
+        "ativou": ativou,
+        "agendados": disparo.get("agendados", 0),
+        "enfileirados": disparo.get("enfileirados", 0),
+        "processados": disparo.get("processados", 0),
+        "nota": (
+            f"1ª etapa disparada agora para {disparo.get('agendados', 0)} contato(s). "
+            "Os próximos e-mails seguem a cadência."
+        ),
+    }
+
+
+@app.get("/api/campaigns/{cid}/replies")
+def campaign_replies(cid: int):
+    """Respostas de leads ligadas a esta campanha (via thread dos envios)."""
+    c = db.conn()
+    camp = c.execute("SELECT id, nome FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if not camp:
+        c.close()
+        return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
+    rows = [dict(r) for r in c.execute(
+        """SELECT r.msgid, r.thread, r.email, r.data, r.classe, r.confianca, r.resumo, r.acao,
+                  ct.nome, ct.empresa
+           FROM replies r
+           JOIN sends s ON s.thread=r.thread AND s.campaign_id=?
+           LEFT JOIN contacts ct ON ct.email=r.email
+           WHERE r.thread!=''
+             AND NOT EXISTS (SELECT 1 FROM bounces b WHERE b.msgid=r.msgid)
+             AND LOWER(IFNULL(r.email,'')) NOT LIKE '%postmaster%'
+             AND LOWER(IFNULL(r.email,'')) NOT LIKE '%mailer-daemon%'
+           GROUP BY r.msgid
+           ORDER BY r.data DESC, r.msgid DESC
+           LIMIT 200""", (cid,)).fetchall()]
+    c.close()
+    out = []
+    for r in rows:
+        out.append({
+            "msgid": r["msgid"], "thread": r["thread"], "email": r["email"],
+            "data": r["data"], "classe": r["classe"], "confianca": r["confianca"],
+            "resumo": r["resumo"], "acao": r.get("acao") or "",
+            "nome": r.get("nome") or "", "empresa": r.get("empresa") or "",
+            "gmail": f"https://mail.google.com/mail/u/0/#all/{r['msgid']}",
+        })
+    return {"campaign_id": cid, "n": len(out), "replies": out}
+
+
+@app.get("/api/campaigns/{cid}/invalidos")
+def campaign_invalidos(cid: int):
+    """Contatos da campanha com status email_invalido / soft_suprimido (+ último bounce)."""
+    c = db.conn()
+    camp = c.execute("SELECT id FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if not camp:
+        c.close()
+        return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
+    rows = [dict(r) for r in c.execute(
+        """SELECT cc.email, cc.status, ct.nome, ct.empresa, ct.tags, ct.validacao_status,
+                  (SELECT b.tipo FROM bounces b WHERE b.email=cc.email
+                   ORDER BY b.criado_em DESC LIMIT 1) AS bounce_tipo,
+                  (SELECT b.diagnostico FROM bounces b WHERE b.email=cc.email
+                   ORDER BY b.criado_em DESC LIMIT 1) AS bounce_diag,
+                  (SELECT b.criado_em FROM bounces b WHERE b.email=cc.email
+                   ORDER BY b.criado_em DESC LIMIT 1) AS bounce_em
+           FROM campaign_contacts cc
+           LEFT JOIN contacts ct ON ct.email=cc.email
+           WHERE cc.campaign_id=? AND cc.status IN ('email_invalido','soft_suprimido')
+           ORDER BY cc.email""", (cid,)).fetchall()]
+    c.close()
+    return {"campaign_id": cid, "n": len(rows), "invalidos": rows}
+
+
+class SanitizeInvalidosBody(BaseModel):
+    action: str = "inativar_crm"  # inativar_crm | remover_campanha | excluir_crm
+    emails: Optional[list[str]] = None
+    confirmacao: str = ""
+
+
+@app.post("/api/campaigns/{cid}/sanitize-invalidos")
+def campaign_sanitize_invalidos(cid: int, body: SanitizeInvalidosBody):
+    """Sanitiza e-mails inválidos da campanha (CRM / vínculo / exclusão)."""
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
+    action = (body.action or "inativar_crm").strip()
+    if action not in ("inativar_crm", "remover_campanha", "excluir_crm"):
+        return JSONResponse({"erro": "action inválida"}, status_code=422)
+    if action == "excluir_crm" and (body.confirmacao or "").strip() != "EXCLUIR":
+        return JSONResponse({
+            "erro": "Para excluir do CRM, confirme digitando EXCLUIR.",
+            "requer_confirmacao": True, "token": "EXCLUIR",
+        }, status_code=409)
+
+    c = db.conn()
+    camp = c.execute("SELECT id FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if not camp:
+        c.close()
+        return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
+
+    if body.emails:
+        wanted = [e.strip().lower() for e in body.emails if (e or "").strip()]
+        placeholders = ",".join("?" * len(wanted)) if wanted else "''"
+        rows = [dict(r) for r in c.execute(
+            f"""SELECT email, status FROM campaign_contacts
+                WHERE campaign_id=? AND email IN ({placeholders})
+                  AND status IN ('email_invalido','soft_suprimido')""",
+            (cid, *wanted)).fetchall()] if wanted else []
+    else:
+        rows = [dict(r) for r in c.execute(
+            """SELECT email, status FROM campaign_contacts
+               WHERE campaign_id=? AND status IN ('email_invalido','soft_suprimido')""",
+            (cid,)).fetchall()]
+    emails = [r["email"] for r in rows]
+    feitos, erros = [], []
+
+    for email in emails:
+        try:
+            if action == "remover_campanha":
+                c.execute(
+                    """UPDATE campaign_contacts SET status='email_invalido', next_send_at=NULL
+                       WHERE campaign_id=? AND email=?""", (cid, email))
+                feitos.append(email)
+            elif action == "inativar_crm":
+                db.marcar_email_invalido(c, email)
+                row = c.execute("SELECT tags FROM contacts WHERE email=?", (email,)).fetchone()
+                if row:
+                    tags = db.tags_list(row["tags"])
+                    if "nao-contatar" not in tags:
+                        tags.append("nao-contatar")
+                    c.execute(
+                        """UPDATE contacts SET tags=?, validacao_status='invalido',
+                               validacao_motivo=COALESCE(NULLIF(validacao_motivo,''),
+                                                         'sanitizado: hard bounce')
+                           WHERE email=?""",
+                        (db.tags_str(tags), email))
+                c.execute(
+                    """UPDATE campaign_contacts SET status='email_invalido', next_send_at=NULL
+                       WHERE email=? AND status IN ('pendente','ativo','email_invalido','soft_suprimido')""",
+                    (email,))
+                feitos.append(email)
+            else:  # excluir_crm — hard delete (mesma lógica do DELETE /contacts)
+                c.commit()
+                c.close()
+                r = delete_contact(email)
+                if isinstance(r, JSONResponse):
+                    erros.append({"email": email, "erro": "não encontrado"})
+                else:
+                    feitos.append(email)
+                c = db.conn()
+        except Exception as ex:
+            erros.append({"email": email, "erro": str(ex)[:120]})
+
+    c.commit()
+    c.close()
+    engine.log(f"campanha {cid}: sanitize-invalidos action={action} n={len(feitos)}")
+    return {"campaign_id": cid, "action": action, "n": len(feitos), "emails": feitos, "erros": erros}
 
 
 @app.post("/api/campaigns/{cid}/pause")
 def campaign_pause(cid: int):
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
     c = db.conn()
     camp = c.execute("SELECT id FROM campaigns WHERE id=?", (cid,)).fetchone()
     if not camp:
@@ -1609,13 +2692,21 @@ def campaign_pause(cid: int):
 def campaign_resume_build(cid: int):
     """Retoma a geração de uma campanha que travou no meio (ex.: cota da IA), continuando de onde
     parou. Só cria templates 'pendente' + steps — a campanha permanece rascunho (não ativa/envia)."""
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
     c = db.conn()
     camp = c.execute("SELECT id FROM campaigns WHERE id=?", (cid,)).fetchone()
     c.close()
     if not camp:
         return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
     prog = ai.build_progress(cid)
-    if not prog or prog.get("status") != "erro":
+    # Erro clássico (cota/crash) OU build stale (worker morto por reload, status ainda "gerando").
+    pode_retomar = bool(prog) and (
+        prog.get("status") == "erro"
+        or (prog.get("status") == "gerando" and prog.get("stale"))
+    )
+    if not pode_retomar:
         return JSONResponse({"erro": "a campanha não está com geração interrompida"}, status_code=409)
     ai.retomar_campanha(cid)
     return {"id": cid, "status": "gerando",
@@ -1632,6 +2723,9 @@ def campaign_rewrite(cid: int, b: ReescreverBody):
     """Reescreve os e-mails da campanha com novas diretrizes + análise (métricas reais)
     + briefing de lançamento. Guardrails: só campanhas NÃO ativas; as novas versões
     nascem 'pendente' (exigem aprovação) e as antigas ficam preservadas como histórico."""
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
     try:
         r = ai.reescrever_campanha(cid, b.diretrizes, b.ordens)
     except ValueError as ex:
@@ -1640,11 +2734,25 @@ def campaign_rewrite(cid: int, b: ReescreverBody):
             "nota": "Reescrevendo os e-mails com as novas diretrizes — acompanhe na tela da campanha."}
 
 
+def _campaign_meta_keys(cid):
+    """Chaves meta ligadas a uma campanha (briefing / build / rewrite log)."""
+    return (f"briefing_{cid}", f"build_{cid}", f"rewrite_log_{cid}")
+
+
+def _campaign_meta_count(c, cid):
+    n = 0
+    for key in _campaign_meta_keys(cid):
+        if c.execute("SELECT 1 FROM meta WHERE key=? LIMIT 1", (key,)).fetchone():
+            n += 1
+    return n
+
+
 def _campaign_delete_safe(c, camp):
     """Rotina segura de exclusão de uma campanha (sem commit): se estiver ativa marca
     'pausada' primeiro, cancela a fila pendente de envio e só então apaga etapas,
-    vínculos, a campanha e os templates de IA nunca enviados. Preserva o histórico
-    (sends/events/replies) e os contatos do CRM. Retorna nº de tarefas canceladas."""
+    vínculos, a campanha, templates de IA nunca enviados e meta órfã (briefing/build/log).
+    Preserva o histórico (sends/events/replies) e os contatos do CRM.
+    Retorna nº de tarefas canceladas."""
     cid = camp["id"]
     if camp["status"] == "ativa":
         c.execute("UPDATE campaigns SET status='pausada' WHERE id=?", (cid,))
@@ -1666,11 +2774,16 @@ def _campaign_delete_safe(c, camp):
                               (f"%camp{cid}-%",)).fetchone()
             if not usado:
                 c.execute("DELETE FROM templates_ai WHERE id=? AND origem='ia'", (tid,))
+    for key in _campaign_meta_keys(cid):
+        c.execute("DELETE FROM meta WHERE key=?", (key,))
     return canceladas
 
 
 @app.delete("/api/campaigns/{cid}")
 def campaign_delete(cid: int):
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
     c = db.conn()
     camp = c.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
     if not camp:
@@ -1692,6 +2805,12 @@ class BulkDeleteCampanhas(BaseModel):
 def campaigns_bulk_delete(body: BulkDeleteCampanhas):
     """Exclusão em massa com a mesma rotina segura por campanha (pausa ativas e cancela
     a fila antes de apagar). dry_run=true só retorna as contagens, sem apagar nada."""
+    if db.dashboard_env() == "remoto":
+        return JSONResponse(
+            {"erro": "Exclusão de campanhas só no ambiente local.",
+             "dashboard_env": "remoto"},
+            status_code=403,
+        )
     where, params = [], []
     if body.ids:
         where.append(f"id IN ({','.join('?' * len(body.ids))})")
@@ -1702,8 +2821,15 @@ def campaigns_bulk_delete(body: BulkDeleteCampanhas):
     sql = "SELECT * FROM campaigns" + (" WHERE " + " AND ".join(where) if where else "")
     c = db.conn()
     camps = c.execute(sql, params).fetchall()
+    # No local, campanhas de origem remota exigem claim antes de apagar.
+    if not body.dry_run:
+        for camp in camps:
+            blocked = _guard_campaign_mutation(int(camp["id"]))
+            if blocked:
+                c.close()
+                return blocked
     if body.dry_run:
-        steps = contatos = fila = 0
+        steps = contatos = fila = meta_keys = 0
         for camp in camps:
             cid = camp["id"]
             steps += c.execute("SELECT COUNT(*) AS n FROM campaign_steps "
@@ -1713,9 +2839,11 @@ def campaigns_bulk_delete(body: BulkDeleteCampanhas):
             fila += c.execute("SELECT COUNT(*) AS n FROM queue WHERE tipo='campaign_send' "
                               "AND status='pending' AND payload LIKE ?",
                               (f'%\"campaign_id\": {cid},%',)).fetchone()["n"]
+            meta_keys += _campaign_meta_count(c, cid)
         c.close()
         return {"dry_run": True, "campanhas": len(camps), "steps": steps,
                 "contatos_campanha": contatos, "fila_cancelar": fila,
+                "meta_keys": meta_keys,
                 "ids": [camp["id"] for camp in camps]}
     excluidas, fila_canceladas = [], 0
     for camp in camps:
@@ -1803,7 +2931,19 @@ def sender_setup(sid: int):
 def sender_connect(sid: int):
     """Inicia o login OAuth do perfil gws e devolve a URL de autorização para o
     usuário clicar/copiar. O processo fica aguardando o callback local; ao concluir
-    no navegador, use GET /api/senders/{sid}/status para confirmar."""
+    no navegador, use GET /api/senders/{sid}/status para confirmar.
+
+    No remoto (Cloudflare) o callback é localhost dentro do container — o browser
+    do usuário nunca completa o fluxo. Autentique no Mac e sincronize gws_accounts.
+    """
+    if db.dashboard_env() == "remoto":
+        return JSONResponse({
+            "erro": ("Conectar Gmail só funciona no Mac (localhost:8377). "
+                     "OAuth usa callback localhost no processo gws — no container "
+                     "remoto isso não chega ao seu navegador. "
+                     "Logue no local e rode: ./scripts/sync-local-to-remote.sh --with-accounts"),
+            "somente_local": True,
+        }, status_code=409)
     r = engine.iniciar_login(sid)
     if not r.get("ok"):
         return JSONResponse({"erro": r.get("erro", "falha ao iniciar login")}, status_code=502)
@@ -2362,6 +3502,9 @@ def _campanha_e_steps(cid):
 
 @app.post("/api/campaigns/{cid}/ads-briefing")
 def campaign_ads_briefing_create(cid: int):
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
     camp, steps = _campanha_e_steps(cid)
     if not camp:
         return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
@@ -2376,12 +3519,21 @@ def campaign_ads_briefing_create(cid: int):
 def campaign_briefing(cid: int):
     """Briefing de lançamento (os porquês) já gerado — recomendação go/no-go."""
     b = ai.briefing_lancamento(cid)
+    if b:
+        b = dict(b)
+        try:
+            b["checklist"] = ai.get_checklist(cid)
+        except ValueError:
+            pass
     return {"id": cid, "briefing": b}
 
 
 @app.post("/api/campaigns/{cid}/briefing")
 def campaign_briefing_create(cid: int):
     """(Re)gera o briefing de lançamento com IA. Nada é ativado — só recomendação."""
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
     try:
         return {"id": cid, "briefing": ai.gerar_briefing_lancamento(cid)}
     except ValueError as e:
@@ -2389,6 +3541,63 @@ def campaign_briefing_create(cid: int):
     except Exception as e:
         code = 429 if ai._erro_eh_cota(str(e)) else 502
         return JSONResponse({"erro": str(e)}, status_code=code)
+
+
+@app.get("/api/campaigns/{cid}/checklist")
+def campaign_checklist_get(cid: int):
+    try:
+        return {"id": cid, "checklist": ai.get_checklist(cid)}
+    except ValueError as e:
+        return JSONResponse({"erro": str(e)}, status_code=404)
+
+
+@app.get("/api/campaigns/{cid}/activation-guide")
+def campaign_activation_guide(cid: int):
+    """Passo a passo até Ativar: o que falta e onde ir."""
+    try:
+        return improvements.activation_guide(cid)
+    except ValueError as e:
+        return JSONResponse({"erro": str(e)}, status_code=404)
+
+
+@app.post("/api/campaigns/{cid}/improvements/abandon-stale")
+def campaign_improvements_abandon_stale(cid: int):
+    """Descarta patches awaiting com from desatualizado / sem diff."""
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
+    try:
+        return improvements.abandon_stale_approvals(cid)
+    except ValueError as e:
+        return JSONResponse({"erro": str(e)}, status_code=404)
+
+
+@app.patch("/api/campaigns/{cid}/checklist/{item_id}")
+def campaign_checklist_patch(cid: int, item_id: str, body: ChecklistItemPatch):
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
+    try:
+        cl = ai.patch_checklist_item(cid, item_id, body.status, body.evidence)
+        return {"id": cid, "checklist": cl}
+    except ValueError as e:
+        msg = str(e)
+        code = 404 if "não encontrad" in msg else 400
+        return JSONResponse({"erro": msg}, status_code=code)
+
+
+@app.post("/api/campaigns/{cid}/checklist/run")
+def campaign_checklist_run(cid: int):
+    """Roda checks automáticos (templates, remetente, contatos, UTM, recomendação)."""
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
+    try:
+        return {"id": cid, "checklist": ai.rodar_checklist(cid)}
+    except ValueError as e:
+        return JSONResponse({"erro": str(e)}, status_code=404)
+    except Exception as e:
+        return JSONResponse({"erro": str(e)}, status_code=502)
 
 
 @app.get("/api/campaigns/{cid}/ads-briefing")
@@ -2469,6 +3678,159 @@ def calendly_scan():
     return engine.scan_calendly()
 
 
+_ENGAGEMENT_TIPOS = {"todos", "abertura", "clique", "resposta", "descadastro"}
+
+
+@app.get("/api/engagement")
+def engagement_feed(tipo: str = "todos", campaign_id: Optional[int] = None,
+                    q: str = "", limit: int = 200):
+    """Feed unificado: aberturas, cliques (com destino), replies e descadastros.
+
+    Usa os mesmos filtros de qualidade dos KPIs (aberturas efetivas, cliques sem bot).
+    Monta sempre o universo completo (p/ stats dos chips) e filtra por ``tipo`` na resposta.
+    """
+    tipo = (tipo or "todos").strip().lower()
+    if tipo not in _ENGAGEMENT_TIPOS:
+        return JSONResponse({"erro": "tipo inválido"}, status_code=422)
+    limit = max(1, min(int(limit or 200), 500))
+    q_norm = (q or "").strip().lower()
+    cid_filtro = campaign_id
+
+    c = db.conn()
+    nomes_emp = {r["email"]: (r["nome"] or "", r["empresa"] or "")
+                 for r in c.execute("SELECT email, nome, empresa FROM contacts").fetchall()}
+    camp = _camp_nomes(c)
+    effective_opens = db.effective_open_trackids(c, engine.BOT_CLICK_JANELA_SEG,
+                                                 campaign_id=cid_filtro)
+    bots = set(db.click_bot_trackids(c, engine.BOT_CLICK_JANELA_SEG))
+    itens = []
+
+    def _match_q(email, nome, empresa):
+        if not q_norm:
+            return True
+        return q_norm in f"{email} {nome} {empresa}".lower()
+
+    def _base(email, kind, quando, *, cid=None, etapa="", url="",
+              detalhe="", gmail="", classe="", acao="", track_id=""):
+        email = (email or "").strip().lower()
+        nome, empresa = nomes_emp.get(email, ("", ""))
+        if not _match_q(email, nome, empresa):
+            return None
+        return {
+            "kind": kind,
+            "quando": quando or "",
+            "email": email,
+            "nome": nome,
+            "empresa": empresa,
+            "is_contato": email in nomes_emp,
+            "campaign_id": cid,
+            "campanha": (camp.get(cid) or f"#{cid}") if cid else "",
+            "etapa": etapa or "",
+            "url": url or "",
+            "detalhe": detalhe or "",
+            "gmail": gmail or "",
+            "classe": classe or "",
+            "acao": acao or "",
+            "track_id": track_id or "",
+        }
+
+    # Aberturas e cliques: dedup por track_id (mesmo filtro dos KPIs).
+    sql = """SELECT track_id, type, MAX(email) email, MAX(ts) quando,
+                    MAX(campaign_id) campaign_id, MAX(etapa) etapa,
+                    MAX(url) url, COUNT(*) toques
+             FROM events WHERE type IN ('open','click') AND track_id!=''"""
+    params: list = []
+    if cid_filtro is not None:
+        sql += " AND campaign_id=?"
+        params.append(cid_filtro)
+    sql += " GROUP BY track_id, type"
+    for r in c.execute(sql, params).fetchall():
+        tid = r["track_id"] or ""
+        if r["type"] == "open":
+            if tid not in effective_opens:
+                continue
+            kind, url = "abertura", ""
+            det = (r["quando"] or "")[:16]
+            if r["etapa"]:
+                det += f" · {r['etapa']}"
+        else:
+            if tid in bots:
+                continue
+            kind, url = "clique", (r["url"] or "")
+            det = url or ((r["quando"] or "")[:16])
+            if r["etapa"] and url:
+                det = f"{r['etapa']} · {url}"
+            elif r["etapa"]:
+                det = f"{r['etapa']} · {det}"
+        if r["toques"] and r["toques"] > 1:
+            det += f" ({r['toques']}×)"
+        it = _base(r["email"], kind, r["quando"] or "", cid=r["campaign_id"],
+                   etapa=r["etapa"] or "", url=url, detalhe=det, track_id=tid)
+        if it:
+            itens.append(it)
+
+    sql = "SELECT email, ts, campaign_id, etapa, track_id FROM events WHERE type='unsubscribe'"
+    params = []
+    if cid_filtro is not None:
+        sql += " AND campaign_id=?"
+        params.append(cid_filtro)
+    for r in c.execute(sql, params).fetchall():
+        det = "descadastrou" + (f" · {r['etapa']}" if r["etapa"] else "")
+        it = _base(r["email"], "descadastro", r["ts"] or "", cid=r["campaign_id"],
+                   etapa=r["etapa"] or "", detalhe=det, track_id=r["track_id"] or "")
+        if it:
+            itens.append(it)
+
+    sql = """SELECT r.email, r.classe, r.confianca, r.data, r.resumo, r.msgid, r.acao,
+                    (SELECT s.campaign_id FROM sends s
+                     WHERE s.thread=r.thread AND r.thread!='' AND s.campaign_id IS NOT NULL
+                     ORDER BY s.id DESC LIMIT 1) AS campaign_id,
+                    (SELECT s.etapa FROM sends s
+                     WHERE s.thread=r.thread AND r.thread!=''
+                     ORDER BY s.id DESC LIMIT 1) AS etapa
+             FROM replies r"""
+    params = []
+    if cid_filtro is not None:
+        sql += """ WHERE EXISTS (
+            SELECT 1 FROM sends s WHERE s.thread=r.thread AND s.campaign_id=? AND r.thread!='')"""
+        params.append(cid_filtro)
+    for r in c.execute(sql, params).fetchall():
+        conf = int(round((r["confianca"] or 0) * 100))
+        acao, classe = r["acao"] or "", r["classe"] or ""
+        det = f"{classe}" + (f" · {conf}%" if conf else "")
+        if r["resumo"]:
+            det += f" — {r['resumo']}"
+        if acao:
+            det += f" [{acao}]"
+        gmail = f"https://mail.google.com/mail/u/0/#all/{r['msgid']}" if r["msgid"] else ""
+        it = _base(r["email"], "resposta", r["data"] or "", cid=r["campaign_id"],
+                   etapa=r["etapa"] or "", detalhe=det, gmail=gmail,
+                   classe=classe, acao=acao)
+        if it:
+            itens.append(it)
+
+    c.close()
+    stats = {"abertura": 0, "clique": 0, "resposta": 0, "descadastro": 0}
+    for it in itens:
+        if it["kind"] in stats:
+            stats[it["kind"]] += 1
+    if tipo != "todos":
+        itens = [it for it in itens if it["kind"] == tipo]
+    itens.sort(key=lambda x: x.get("quando") or "", reverse=True)
+    total = len(itens)
+    itens = itens[:limit]
+    return {
+        "total": sum(stats.values()),
+        "filtrados": total,
+        "mostrados": len(itens),
+        "tipo": tipo,
+        "campaign_id": cid_filtro,
+        "q": q,
+        "stats": stats,
+        "itens": itens,
+    }
+
+
 @app.get("/api/replies")
 def replies_list():
     c = db.conn()
@@ -2511,6 +3873,225 @@ class ReplyConfig(BaseModel):
 @app.post("/api/replies/config")
 def replies_config(cfg: ReplyConfig):
     return engine.set_reply_config(auto_reply=cfg.auto_reply, classes=cfg.classes)
+
+
+# ---------------- agentes / tokens / conhecimento ----------------
+
+@app.get("/api/agentes")
+def agentes_catalogo():
+    return {"agentes": agent_usage.catalog_with_status(),
+            "vertex": vertex.vertex_status(),
+            "grok": grok.grok_status()}
+
+
+@app.get("/api/agentes/resumo")
+def agentes_resumo(days: int = 30):
+    return agent_usage.resumo(days=max(1, min(days, 365)))
+
+
+@app.get("/api/agentes/runs")
+def agentes_runs(limit: int = 80, agent: str = "", campaign_id: Optional[int] = None):
+    return {"runs": agent_usage.list_runs(limit=max(1, min(limit, 500)),
+                                          agent=agent, campaign_id=campaign_id)}
+
+
+@app.get("/api/agentes/knowledge")
+def agentes_knowledge(limit: int = 40, agent: str = ""):
+    return {"items": agent_usage.list_knowledge(limit=max(1, min(limit, 200)), agent=agent)}
+
+
+class KnowledgeBody(BaseModel):
+    agent: str = "manual"
+    titulo: str
+    corpo: str
+    campaign_id: Optional[int] = None
+    tags: str = ""
+
+
+@app.post("/api/agentes/knowledge")
+def agentes_knowledge_save(b: KnowledgeBody):
+    kid = agent_usage.save_knowledge(
+        agent=b.agent, titulo=b.titulo, corpo=b.corpo,
+        campaign_id=b.campaign_id, tags=b.tags)
+    return {"ok": True, "id": kid}
+
+
+# ---------------- melhorias de campanha (orquestrador) ----------------
+
+class ImprovementRunBody(BaseModel):
+    mode: str = "review"  # auto | review | selective
+    suggestion_ids: Optional[List[str]] = None
+    replace: bool = False  # cancela run ativo e inicia outro
+
+
+class TaskDecisionBody(BaseModel):
+    reason: str = ""
+    feedback: str = ""
+    edited_patch: Optional[dict] = None
+
+
+class RollbackBody(BaseModel):
+    campaign_version_id: int
+
+
+@app.get("/api/campaigns/{cid}/improvements/suggestions")
+def campaign_improvement_suggestions(cid: int):
+    return {"suggestions": improvements.collect_suggestions(cid),
+            "enabled": improvements.improvements_enabled()}
+
+
+@app.get("/api/campaigns/{cid}/improvements/runs")
+def campaign_improvement_runs(cid: int):
+    rescued = improvements.rescue_stuck_improvement_runs(max_age_sec=180)
+    return {"runs": improvements.list_runs_for_campaign(cid),
+            "active": improvements.active_run_for_campaign(cid),
+            "rescued": rescued}
+
+
+@app.post("/api/campaigns/{cid}/improvements/runs")
+def campaign_improvement_start(cid: int, b: ImprovementRunBody):
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
+    try:
+        return improvements.start_run(
+            cid, mode=b.mode or "review",
+            suggestion_ids=b.suggestion_ids, replace=bool(b.replace))
+    except ValueError as ex:
+        return JSONResponse({"erro": str(ex)}, status_code=400)
+    except RuntimeError as ex:
+        return JSONResponse({"erro": str(ex)}, status_code=409)
+
+
+@app.get("/api/campaigns/{cid}/improvements/runs/{rid}")
+def campaign_improvement_run_get(cid: int, rid: int):
+    run = improvements.run_get(rid)
+    if not run or run.get("campaign_id") != cid:
+        return JSONResponse({"erro": "run não encontrado"}, status_code=404)
+    return run
+
+
+class ImprovementCancelBody(BaseModel):
+    abandon_approvals: bool = False
+    reason: str = ""
+
+
+@app.post("/api/improvements/runs/{rid}/cancel")
+def improvement_run_cancel(rid: int, b: ImprovementCancelBody = ImprovementCancelBody()):
+    blocked = _guard_improvement_run_mutation(rid)
+    if blocked:
+        return blocked
+    try:
+        return improvements.cancel_run(
+            rid,
+            reason=b.reason or "cancelado pelo usuário",
+            abandon_approvals=bool(b.abandon_approvals),
+        )
+    except ValueError as ex:
+        return JSONResponse({"erro": str(ex)}, status_code=404)
+
+
+@app.post("/api/improvements/tasks/{tid}/approve")
+def improvement_task_approve(tid: int, b: TaskDecisionBody = TaskDecisionBody()):
+    blocked = _guard_improvement_task_mutation(tid)
+    if blocked:
+        return blocked
+    try:
+        return improvements.apply_task(tid, approved_by="dashboard",
+                                       edited_patch=b.edited_patch)
+    except ValueError as ex:
+        return JSONResponse({"erro": str(ex)}, status_code=400)
+    except RuntimeError as ex:
+        return JSONResponse({"erro": str(ex)}, status_code=409)
+
+
+@app.post("/api/improvements/tasks/{tid}/reject")
+def improvement_task_reject(tid: int, b: TaskDecisionBody = TaskDecisionBody()):
+    blocked = _guard_improvement_task_mutation(tid)
+    if blocked:
+        return blocked
+    try:
+        return improvements.reject_task(tid, reason=b.reason or "")
+    except ValueError as ex:
+        return JSONResponse({"erro": str(ex)}, status_code=404)
+
+
+@app.post("/api/improvements/tasks/{tid}/retry")
+def improvement_task_retry(tid: int, b: TaskDecisionBody = TaskDecisionBody()):
+    blocked = _guard_improvement_task_mutation(tid)
+    if blocked:
+        return blocked
+    try:
+        return improvements.retry_task(tid, feedback=b.feedback or b.reason or "")
+    except (ValueError, RuntimeError) as ex:
+        return JSONResponse({"erro": str(ex)}, status_code=400)
+
+
+@app.post("/api/improvements/tasks/{tid}/human-done")
+def improvement_task_human_done(tid: int, b: TaskDecisionBody = TaskDecisionBody()):
+    blocked = _guard_improvement_task_mutation(tid)
+    if blocked:
+        return blocked
+    try:
+        return improvements.mark_human_done(tid, note=b.reason or b.feedback or "")
+    except ValueError as ex:
+        return JSONResponse({"erro": str(ex)}, status_code=400)
+
+
+@app.post("/api/improvements/tasks/{tid}/convert-copy")
+def improvement_task_convert_copy(tid: int, b: TaskDecisionBody = TaskDecisionBody()):
+    blocked = _guard_improvement_task_mutation(tid)
+    if blocked:
+        return blocked
+    try:
+        return improvements.convert_to_copy_task(tid, feedback=b.feedback or b.reason or "")
+    except ValueError as ex:
+        return JSONResponse({"erro": str(ex)}, status_code=400)
+    except RuntimeError as ex:
+        return JSONResponse({"erro": str(ex)}, status_code=409)
+
+
+@app.get("/api/campaigns/{cid}/versions")
+def campaign_versions(cid: int):
+    return {"versions": improvements.list_versions(cid)}
+
+
+@app.post("/api/campaigns/{cid}/rollback")
+def campaign_rollback(cid: int, b: RollbackBody):
+    blocked = _guard_campaign_mutation(cid)
+    if blocked:
+        return blocked
+    try:
+        return improvements.rollback_campaign(cid, b.campaign_version_id)
+    except ValueError as ex:
+        return JSONResponse({"erro": str(ex)}, status_code=400)
+
+
+@app.post("/api/campaigns/{cid}/claim-local")
+def campaign_claim_local(cid: int):
+    """No ambiente local: importa campanha de origem remota e passa a ser a fonte editável."""
+    if db.dashboard_env() != "local":
+        return JSONResponse(
+            {"erro": "Importar como local só faz sentido no ambiente local.",
+             "dashboard_env": db.dashboard_env()},
+            status_code=403,
+        )
+    c = db.conn()
+    camp = c.execute("SELECT id, origem_ambiente FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if not camp:
+        c.close()
+        return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
+    origem = _campaign_origem(camp)
+    if origem == "local":
+        c.close()
+        return {"id": cid, "origem_ambiente": "local", "ja_local": True,
+                "nota": "Campanha já é de origem local."}
+    c.execute("UPDATE campaigns SET origem_ambiente='local', atualizada_em=? WHERE id=?",
+              (db.now(), cid))
+    c.commit()
+    c.close()
+    return {"id": cid, "origem_ambiente": "local", "ja_local": False,
+            "nota": "Campanha importada como local — agora pode editar/ativar neste Mac."}
 
 
 @app.get("/api/context")

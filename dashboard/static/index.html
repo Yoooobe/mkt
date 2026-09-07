@@ -7,20 +7,25 @@
 <link rel="icon" href="/favicon.ico">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=20260721-campanha-versao-export">
+<link rel="stylesheet" href="/static/style.css?v=20260811-bounce-sanitize">
+<script defer src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 </head>
 <body>
 <header class="topbar">
-  <div class="logo">4unik<span>.mail</span></div>
+  <a href="#/inicio" class="logo" aria-label="4unik.mail — início">
+    <img class="logo-img" src="/static/4unik-logo-lockup.webp" alt="4Unik" width="140" height="32">
+    <span class="logo-product">.mail</span>
+  </a>
   <nav id="nav">
     <a href="#/inicio" data-r="inicio">Início</a>
     <a href="#/campanhas" data-r="campanhas">Campanhas</a>
     <a href="#/crm" data-r="crm">CRM</a>
-    <a href="#/nomes" data-r="nomes">Qualidade</a>
+    <a href="#/nomes" data-r="nomes">Qualidade</a><!-- nomes + validação leads -->
     <a href="#/respostas" data-r="respostas">Respostas</a>
     <a href="#/remetentes" data-r="remetentes">Remetentes</a>
     <a href="#/templates" data-r="templates">Templates</a>
     <a href="#/metricas" data-r="metricas">Métricas</a>
+    <a href="#/agentes" data-r="agentes">Agentes</a>
     <a href="#/site" data-r="site">Site & Ads</a>
     <a href="#/midia" data-r="midia">Mídia & Google</a>
     <a href="#/contexto" data-r="contexto">Contexto IA</a>
@@ -28,6 +33,12 @@
   <span id="chip" class="statuschip ok">…</span>
 </header>
 <main id="view"></main>
+<footer class="site-footer">
+  <a href="https://plataforma.4unik.com.br" target="_blank" rel="noopener">
+    Conheça a plataforma 4Unik
+  </a>
+  <span>plataforma.4unik.com.br</span>
+</footer>
 <div id="toast"></div>
 
 <dialog id="dlg-campanha">
@@ -69,7 +80,7 @@
     <small class="muted" id="nc-perfil-hint">Prioriza contatos úteis para o objetivo sem expor dados individuais à IA.</small></div>
   <div class="field"><label>Tags (opcional — inclui só quem tiver alguma destas)</label>
     <div id="nc-tags" class="tagpick"><span class="muted">carregando…</span></div></div>
-  <div class="field" style="background:#f7f9fa;border-radius:9px;padding:9px 12px">
+  <div class="field field-hint-box">
     🎯 <b id="nc-count">—</b> contato(s) entram nesta campanha</div>
   <div class="toolbar"><span class="sp"></span>
     <button onclick="document.getElementById('dlg-campanha').close()">Cancelar</button>
@@ -79,16 +90,23 @@
 
 <dialog id="dlg-editar-campanha">
   <h3>✏️ Editar campanha</h3>
-  <p class="muted">Atualize o planejamento. A audiência e os e-mails já criados não são alterados aqui.</p>
+  <p class="muted">Salvar grava o planejamento. <b>Alterar só o horário/cadência não regenera e-mails.</b> Marque a opção abaixo apenas se mudou o objetivo e quiser reescrever os e-mails. Nada é enviado sem ativar ou usar “Disparar agora”.</p>
   <div class="field"><label>Nome da campanha</label><input id="ec-nome" style="width:100%"></div>
-  <div class="field"><label>Objetivo</label><textarea id="ec-objetivo" rows="3" style="width:100%"></textarea></div>
+  <div class="field"><label>Objetivo</label><textarea id="ec-objetivo" rows="8" style="width:100%"></textarea></div>
   <div class="field"><label>Remetente</label><select id="ec-sender" style="width:100%"></select></div>
   <div class="row">
     <div class="field"><label>Tipo</label><select id="ec-tipo"><option value="finita">Finita (sequência única)</option><option value="infinita">Infinita (ciclo contínuo)</option></select></div>
     <div class="field"><label>Cadência (X a Y dias)</label><input id="ec-min" type="number" min="1" placeholder="min" style="width:64px"> <input id="ec-max" type="number" min="1" placeholder="max" style="width:64px"></div>
   </div>
-  <div class="field"><label>1º envio (opcional)</label><input id="ec-inicio" type="datetime-local" style="width:230px"><small class="muted">Vazio = começa quando ativar.</small></div>
-  <div class="toolbar"><span class="sp"></span><button onclick="document.getElementById('dlg-editar-campanha').close()">Cancelar</button><button class="primary" id="ec-salvar">Salvar alterações</button></div>
+  <div class="field"><label>1º envio (opcional)</label><input id="ec-inicio" type="datetime-local" style="width:230px"><small class="muted">Vazio = começa quando ativar. Para enviar já, use “Disparar agora” na tela da campanha.</small></div>
+  <label class="tagopt" style="margin:8px 0;display:flex;gap:8px;align-items:center">
+    <input type="checkbox" id="ec-regenerar">
+    Regenerar e-mails com o novo objetivo (só se o objetivo mudou)
+  </label>
+  <div class="toolbar"><span class="sp"></span>
+    <button type="button" onclick="document.getElementById('dlg-editar-campanha').close()">Cancelar</button>
+    <button type="button" class="primary" id="ec-salvar">Salvar alterações</button>
+  </div>
 </dialog>
 
 <dialog id="dlg-reescrever" style="max-width:560px">
@@ -189,6 +207,6 @@
 
 <script>window.API_KEY = "__API_KEY__";</script>
 <!-- Versão no URL evita que o navegador reaproveite uma tela antiga após atualizações locais. -->
-<script src="/static/app.js?v=20260721-campanha-versao-export"></script>
+<script src="/static/app.js?v=20260811-bounce-sanitize"></script>
 </body>
 </html>

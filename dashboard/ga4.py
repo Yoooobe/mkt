@@ -47,15 +47,24 @@ def _property_id():
 
 def _token():
     """Service account (GA4_CREDENTIALS_JSON) com fallback no OAuth gcloud do
-    google_media — funciona com qualquer um dos dois setups."""
+    google_media — funciona com qualquer um dos dois setups.
+
+    Aceita caminho de arquivo (local) ou JSON inline (secret no container).
+    """
     global _creds
-    if not CREDENTIALS_JSON:
+    raw = (google_media._env().get("GA4_CREDENTIALS_JSON", "") or CREDENTIALS_JSON or "").strip()
+    if not raw:
         return google_media._token()
     from google.oauth2 import service_account
     from google.auth.transport.requests import Request
     if _creds is None:
-        _creds = service_account.Credentials.from_service_account_file(
-            CREDENTIALS_JSON, scopes=["https://www.googleapis.com/auth/analytics.readonly"])
+        scopes = ["https://www.googleapis.com/auth/analytics.readonly"]
+        if raw.startswith("{"):
+            _creds = service_account.Credentials.from_service_account_info(
+                json.loads(raw), scopes=scopes)
+        else:
+            _creds = service_account.Credentials.from_service_account_file(
+                raw, scopes=scopes)
     if not _creds.valid:
         _creds.refresh(Request())
     return _creds.token
