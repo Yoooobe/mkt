@@ -80,11 +80,14 @@ def _endpoint(model):
             f"/publishers/google/models/{model}:generateContent")
 
 
-def generate_json(prompt, model=None, timeout=300, thinking_budget=None):
+def generate_json(prompt, model=None, timeout=300, thinking_budget=None,
+                  agent: str = "", task_type: str = "", detalhe: str = ""):
     """Gera e devolve um dict a partir de um prompt que pede JSON.
 
     thinking_budget=0 desliga o raciocínio interno (classificações rápidas);
-    None mantém o default do modelo (gerações longas de campanha)."""
+    None mantém o default do modelo (gerações longas de campanha).
+    Registra tokens em agent_runs (via agent_usage)."""
+    import agent_usage
     model = model or MODEL_PRO
     gen_cfg = {"responseMimeType": "application/json", "maxOutputTokens": 32768}
     if thinking_budget is not None:
@@ -93,26 +96,52 @@ def generate_json(prompt, model=None, timeout=300, thinking_budget=None):
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": gen_cfg,
     }
-    r = requests.post(_endpoint(model), json=body, timeout=timeout,
-                      headers={"Authorization": f"Bearer {_token()}"})
+    with agent_usage.timed_run() as tr:
+        try:
+            r = requests.post(_endpoint(model), json=body, timeout=timeout,
+                              headers={"Authorization": f"Bearer {_token()}"})
+        except Exception as exc:
+            agent_usage.log_run(agent=agent or "vertex", task_type=task_type,
+                                model=model, latency_ms=tr.ms, ok=False,
+                                erro=str(exc)[:300], detalhe=detalhe)
+            raise
     if not r.ok:
+        agent_usage.log_run(agent=agent or "vertex", task_type=task_type,
+                            model=model, latency_ms=tr.ms, ok=False,
+                            erro=f"HTTP {r.status_code}: {r.text[:200]}",
+                            detalhe=detalhe)
         raise RuntimeError(f"Vertex {model} HTTP {r.status_code}: {r.text[:300]}")
     data = r.json()
+    usage = agent_usage.parse_usage_metadata(data)
     cands = data.get("candidates") or []
     if not cands:
         block = (data.get("promptFeedback") or {}).get("blockReason", "sem candidates")
+        agent_usage.log_run(agent=agent or "vertex", task_type=task_type,
+                            model=model, latency_ms=tr.ms, ok=False,
+                            erro=f"sem candidates ({block})", detalhe=detalhe, **usage)
         raise RuntimeError(f"Vertex {model} não gerou resposta ({block})")
     cand = cands[0]
     txt = "".join(p.get("text", "") for p in (cand.get("content") or {}).get("parts") or [])
     if not txt.strip():
+        agent_usage.log_run(agent=agent or "vertex", task_type=task_type,
+                            model=model, latency_ms=tr.ms, ok=False,
+                            erro=f"vazio (finishReason={cand.get('finishReason')})",
+                            detalhe=detalhe, **usage)
         raise RuntimeError(f"Vertex {model} devolveu vazio (finishReason={cand.get('finishReason')})")
     try:
-        return json.loads(txt)
+        parsed = json.loads(txt)
     except json.JSONDecodeError:
         m = re.search(r"\{.*\}", txt, re.S)
         if not m:
+            agent_usage.log_run(agent=agent or "vertex", task_type=task_type,
+                                model=model, latency_ms=tr.ms, ok=False,
+                                erro="não retornou JSON", detalhe=detalhe, **usage)
             raise RuntimeError(f"Vertex {model} não retornou JSON: {txt[:200]}")
-        return json.loads(m.group(0))
+        parsed = json.loads(m.group(0))
+    agent_usage.log_run(agent=agent or "vertex", task_type=task_type,
+                        model=model, latency_ms=tr.ms, ok=True,
+                        detalhe=detalhe or task_type, **usage)
+    return parsed
 
 
 def vertex_status():

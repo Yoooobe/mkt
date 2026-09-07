@@ -3,14 +3,32 @@
 Espelha ai.classificar_resposta (mesmas classes e regras): a IA interpreta,
 o código decide. Pronto para deploy no Vertex AI Agent Engine.
 """
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from google.adk.agents import Agent
 
-from common import GUARDRAIL, kb_context
+# Autocontido para o deploy no Agent Engine: só a pasta do agente é empacotada,
+# então as KBs viajam como snapshot local (kb_snapshot.md, gerado a partir de
+# dashboard/context/kb — regenere antes de redeploy quando as KBs mudarem).
+_HERE = Path(__file__).resolve().parent
+
+GUARDRAIL = (
+    "GUARDRAIL: você produz SOMENTE rascunhos e classificações. Nunca afirme que "
+    "algo foi enviado, publicado ou ativado — a aprovação e o envio são decisões "
+    "do código e da equipe 4Unik, nunca suas."
+)
+
+
+def kb_context(max_chars: int = 14000) -> str:
+    snap = _HERE / "kb_snapshot.md"
+    if snap.exists():
+        return snap.read_text(encoding="utf-8", errors="replace")[:max_chars]
+    kb_dir = _HERE.parent.parent / "dashboard" / "context" / "kb"
+    if not kb_dir.exists():
+        return ""
+    partes = [f"### KB: {f.name}\n{f.read_text(encoding='utf-8', errors='replace')}"
+              for f in sorted(kb_dir.glob("*.md"))]
+    return "\n\n".join(partes)[:max_chars]
 
 CALENDLY = "https://calendly.com/4unik/30min?month=2026-07"
 

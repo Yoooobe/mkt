@@ -1,0 +1,157 @@
+{
+  "categories": {
+    "copy": {"agent_key": "copywriter", "max_iterations": 3, "guardrails": ["no_budget", "no_audience", "no_schedule", "no_legal"]},
+    "compliance": {"agent_key": "validador", "max_iterations": 2, "guardrails": ["always_human"]},
+    "segmentacao": {"agent_key": null, "max_iterations": 0, "guardrails": ["always_human"]},
+    "oferta": {"agent_key": null, "max_iterations": 0, "guardrails": ["always_human"]},
+    "canal_timing": {"agent_key": null, "max_iterations": 0, "guardrails": ["always_human"]},
+    "criativo": {"agent_key": "copywriter", "max_iterations": 3, "guardrails": ["no_budget", "no_audience"]},
+    "landing_page": {"agent_key": null, "max_iterations": 0, "guardrails": ["always_human"]},
+    "dados_tracking": {"agent_key": "estrategista", "max_iterations": 2, "guardrails": []},
+    "outro": {"agent_key": null, "max_iterations": 0, "guardrails": ["always_human"]}
+  },
+  "agents": [
+    {
+      "id": "name_analyzer",
+      "nome": "Name Analyzer",
+      "tier": "flash",
+      "via": "agent_engine",
+      "env": "VERTEX_AGENT_NAME_ANALYZER",
+      "papel": "Qualidade de nomes + enriquecimento",
+      "skills": [],
+      "pipeline": []
+    },
+    {
+      "id": "lead_validator",
+      "nome": "Lead Validator",
+      "tier": "flash",
+      "via": "agent_engine",
+      "env": "VERTEX_AGENT_LEAD_VALIDATOR",
+      "papel": "Validação de leads com evidência",
+      "skills": [],
+      "pipeline": []
+    },
+    {
+      "id": "scrape_planner",
+      "nome": "Scrape Planner",
+      "tier": "flash",
+      "via": "agent_engine",
+      "env": "VERTEX_AGENT_SCRAPE_PLANNER",
+      "papel": "Planeja uso mínimo do Firecrawl",
+      "skills": [],
+      "pipeline": []
+    },
+    {
+      "id": "campaign_writer",
+      "nome": "Campaign Writer",
+      "tier": "pro",
+      "via": "generate_json",
+      "env": "VERTEX_AGENT_CAMPAIGN_WRITER",
+      "papel": "Copy de campanha (E1…En)",
+      "skills": [
+        "email-creative-builder (aaron-he-zhu, Apache-2.0)",
+        "copywriting (community)",
+        "email-sequence (community)"
+      ],
+      "pipeline": ["criar"]
+    },
+    {
+      "id": "reply_classifier",
+      "nome": "Reply Classifier",
+      "tier": "flash",
+      "via": "generate_json",
+      "env": "VERTEX_AGENT_REPLY_CLASSIFIER",
+      "papel": "Classifica respostas inbound",
+      "skills": [],
+      "pipeline": []
+    },
+    {
+      "id": "estrategista",
+      "nome": "Estrategista",
+      "tier": "pro",
+      "via": "generate_json",
+      "env": "",
+      "papel": "Plano / briefing / portfolio",
+      "skills": [
+        "gtm-engineer-growth-specialist (4Unik/GTM, interno)",
+        "email-sequence (community)",
+        "growth-engine (community)"
+      ],
+      "pipeline": ["criar", "melhorias", "reescrever"]
+    },
+    {
+      "id": "copywriter",
+      "nome": "Copywriter",
+      "tier": "pro",
+      "via": "generate_json",
+      "env": "",
+      "papel": "Escreve e-mails da sequência (assuntos ousados)",
+      "skills": [
+        "email-creative-builder (aaron-he-zhu, Apache-2.0)",
+        "copywriting (community)",
+        "email-sequence (community)"
+      ],
+      "pipeline": ["criar", "melhorias", "reescrever"]
+    },
+    {
+      "id": "editor",
+      "nome": "Editor",
+      "tier": "pro",
+      "via": "generate_json",
+      "env": "",
+      "papel": "Revisa gancho/CTA com barra do email-creative-builder + copy-editing",
+      "skills": [
+        "email-creative-builder (aaron-he-zhu, Apache-2.0)",
+        "copy-editing (community)"
+      ],
+      "pipeline": ["criar", "reescrever"]
+    },
+    {
+      "id": "estrategista_gtm",
+      "nome": "Estrategista GTM",
+      "tier": "pro",
+      "via": "generate_json",
+      "env": "",
+      "papel": "Briefing de lançamento e go/no-go",
+      "skills": [
+        "gtm-engineer-growth-specialist (4Unik/GTM, interno)",
+        "growth-engine (community)"
+      ],
+      "pipeline": ["criar", "reescrever"]
+    },
+    {
+      "id": "validador",
+      "nome": "Validador",
+      "tier": "flash",
+      "via": "generate_json",
+      "env": "",
+      "papel": "Revisa patches de melhoria (compliance + qualidade)",
+      "skills": ["copy-editing (community)"],
+      "pipeline": ["melhorias"]
+    },
+    {
+      "id": "planner",
+      "nome": "Planner de melhorias",
+      "tier": "flash",
+      "via": "generate_json",
+      "env": "",
+      "papel": "Classifica sugestões e resolve conflitos de path",
+      "skills": [],
+      "pipeline": ["melhorias"]
+    },
+    {
+      "id": "grok_critic",
+      "nome": "Grok Critic",
+      "tier": "pro",
+      "via": "grok",
+      "env": "GROK_ENABLED",
+      "papel": "Segundo parecer: crítica de portfólio, validador de melhorias, reescrita e recomendações SEO/GEO",
+      "skills": [
+        "gtm-engineer-growth-specialist (4Unik/GTM, interno)",
+        "growth-engine (community)",
+        "copywriting (community)"
+      ],
+      "pipeline": ["criar", "melhorias", "reescrever", "seo_geo"]
+    }
+  ]
+}
