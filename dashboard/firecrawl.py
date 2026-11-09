@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4unik.mail — cliente Firecrawl (HTTP) com orçamento apertado (~1 crédito/lead).
+"""Yoobe.mail — cliente Firecrawl (HTTP) com orçamento apertado (~1 crédito/lead).
 
 Defaults de economia:
   - scrape homepage do domínio primeiro (1 crédito)

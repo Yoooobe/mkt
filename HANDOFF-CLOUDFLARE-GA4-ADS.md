@@ -7,7 +7,7 @@ Não é necessário criar Worker, D1 ou alterar a conta Cloudflare.
 
 ```text
 E-mail
-  → https://plataforma.4unik.com.br/api/email/{open|click|unsubscribe}
+  → https://corporate.yoobe.co/api/email/{open|click|unsubscribe}
   → proxy Nginx
   → https://leads-ingest-api.vercel.app/api/email/*
   → Sanity (eventos)
@@ -48,7 +48,7 @@ pelo dashboard por cofre de senha. Não enviar em e-mail nem fazer commit.
 Em `dashboard/.env`:
 
 ```text
-TRACKING_BASE_URL=https://plataforma.4unik.com.br/api/email
+TRACKING_BASE_URL=https://corporate.yoobe.co/api/email
 TRACKING_SECRET=<exatamente o mesmo valor da Vercel>
 TRACKING_SYNC_KEY=<exatamente o mesmo valor da Vercel>
 ```
@@ -57,7 +57,7 @@ Reiniciar o dashboard depois de alterar o arquivo.
 
 ## 3. Proxy no servidor da plataforma
 
-Quem administra o Nginx de `plataforma.4unik.com.br` deve aplicar:
+Quem administra o Nginx de `corporate.yoobe.co` deve aplicar:
 
 ```nginx
 location /api/email/ {
@@ -113,8 +113,8 @@ No GA4:
 
 Eventos emitidos:
 
-- `contact_whatsapp` para `https://wa.me/551126844724`.
-- `contact_email` para `mailto:comercial@4unik.com.br`.
+- `contact_whatsapp` para `https://wa.me/5541987607512`.
+- `contact_email` para `mailto:corporate@yoobe.co`.
 
 O payload do GA4 contém somente método, campanha, etapa e UTMs. Nome, e-mail e
 telefone nunca são enviados ao Analytics.

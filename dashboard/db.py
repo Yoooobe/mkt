@@ -718,7 +718,7 @@ def sender_get(sid):
 
 def sender_default():
     c = conn()
-    r = c.execute("SELECT * FROM senders ORDER BY id LIMIT 1").fetchone()
+    r = c.execute("SELECT * FROM senders WHERE lower(email)='genau@yoobe.co' ORDER BY id DESC LIMIT 1").fetchone()
     c.close()
     return dict(r) if r else None
 

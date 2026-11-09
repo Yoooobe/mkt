@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4unik.mail — importadores (seed + sync incremental).
+"""Yoobe.mail — importadores (seed + sync incremental).
 
 Fontes opcionais: proposals/propostas_contatos.csv, propostas_sem_resposta.csv,
 sent_log.txt, drafts/*.md (classificações do monitor) e Gmail via gws

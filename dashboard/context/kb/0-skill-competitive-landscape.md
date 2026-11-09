@@ -6,7 +6,7 @@ _Fonte: `/Users/genautech/mkt/.cursor/skills/gtm-engineer-growth-specialist/refe
 
 Fonte: planilha "Direct Mail and Gifting Automation Software Platforms.xlsx" (base_leads, compilada de NotebookLM + fontes públicas, jul/2026). Usar como base factual para battlecards, comparativos e posicionamento. Não inventar números além dos listados; quando a célula original dizia "Not in source", o dado é desconhecido.
 
-## 4unik (by Yoobe) — o produto
+## Yoobe (by Yoobe) — o produto
 
 - **Sede**: Brasil (São Paulo / LATAM). Yoobe é de Curitiba, PR.
 - **ICPs**: RH (onboarding, reconhecimento), Vendas (incentivos), E-learning, produtores de eventos, criadores de conteúdo e SaaS B2B.

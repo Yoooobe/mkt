@@ -1,9 +1,9 @@
-# 4Unik — Produto, posicionamento e provas
+# Yoobe — Produto, posicionamento e provas
 
 ## Posicionamento
-A 4Unik é uma infraestrutura de recompensas corporativas: uma camada técnica e operacional que conecta programas de engajamento, gamificação, reconhecimento e incentivo a catálogo corporativo, checkout, carteiras, fulfillment e rastreio.
+A Yoobe é uma infraestrutura de recompensas corporativas: uma camada técnica e operacional que conecta programas de engajamento, gamificação, reconhecimento e incentivo a catálogo corporativo, checkout, carteiras, fulfillment e rastreio.
 
-Não é apenas uma loja de brindes nem um e-commerce avulso. A 4Unik traduz pontos, metas, reconhecimento e campanhas em recompensas físicas ou digitais entregues com governança.
+Não é apenas uma loja de brindes nem um e-commerce avulso. A Yoobe traduz pontos, metas, reconhecimento e campanhas em recompensas físicas ou digitais entregues com governança.
 
 ## Componentes da stack
 - **Motor de gamificação**: pontos, rankings, missões, badges, níveis, desafios e campanhas.
@@ -27,17 +27,17 @@ Não é apenas uma loja de brindes nem um e-commerce avulso. A 4Unik traduz pont
 - SSO/SAML e pacote de segurança entram em escopos Enterprise.
 
 ## Links oficiais
-- Site/plataforma: https://plataforma.4unik.com.br
-- API e integrações: https://plataforma.4unik.com.br/landing/api-integracoes/
-- Campanhas de gamificação: https://plataforma.4unik.com.br/landing/plataforma/campanhas-gamificacao/
-- Motor de gamificação: https://plataforma.4unik.com.br/landing/plataforma/motor-gamificacao/
-- Infraestrutura de recompensas: https://plataforma.4unik.com.br/landing/infraestrutura-de-recompensas/
-- Segurança: https://plataforma.4unik.com.br/landing/seguranca/
+- Site/plataforma: https://corporate.yoobe.co
+- API e integrações: https://corporate.yoobe.co/landing/api-integracoes/
+- Campanhas de gamificação: https://corporate.yoobe.co/landing/plataforma/campanhas-gamificacao/
+- Motor de gamificação: https://corporate.yoobe.co/landing/plataforma/motor-gamificacao/
+- Infraestrutura de recompensas: https://corporate.yoobe.co/landing/infraestrutura-de-recompensas/
+- Segurança: https://corporate.yoobe.co/landing/seguranca/
 
 ## Contatos comerciais oficiais
-- WhatsApp: +55 11 2684-4724
-- Link WhatsApp: https://wa.me/551126844724
-- E-mail para retorno comercial: comercial@4unik.com.br
+- WhatsApp: +55 41 98760-7512
+- Link WhatsApp: https://wa.me/5541987607512
+- E-mail para retorno comercial: corporate@yoobe.co
 - Estes são os canais oficiais para CTAs de conversa e retorno. Cliques devem ser medidos como `contact_whatsapp` e `contact_email` no GA4.
 
 ## Tom de voz

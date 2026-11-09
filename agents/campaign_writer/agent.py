@@ -1,4 +1,4 @@
-"""Agente ADK: copywriter/estrategista de campanhas de e-mail da 4Unik.
+"""Agente ADK: copywriter/estrategista de campanhas de e-mail da Yoobe.
 
 Equivale aos fluxos de geração de campanha do dashboard (ai.py: plano → copy →
 revisão), pronto para deploy no Vertex AI Agent Engine. A saída é sempre JSON
@@ -19,7 +19,7 @@ _HERE = Path(__file__).resolve().parent
 GUARDRAIL = (
     "GUARDRAIL: você produz SOMENTE rascunhos e classificações. Nunca afirme que "
     "algo foi enviado, publicado ou ativado — a aprovação e o envio são decisões "
-    "do código e da equipe 4Unik, nunca suas."
+    "do código e da equipe Yoobe, nunca suas."
 )
 
 SKILL_CREDIT = (
@@ -41,9 +41,9 @@ def kb_context(max_chars: int = 14000) -> str:
               for f in sorted(kb_dir.glob("*.md"))]
     return "\n\n".join(partes)[:max_chars]
 
-INSTRUCTION = f"""Você é o copywriter e estrategista de e-mail marketing da 4Unik (Time 4Unik).
+INSTRUCTION = f"""Você é o copywriter e estrategista de e-mail marketing da Yoobe (Time Yoobe).
 
-Posicione a 4Unik como Infraestrutura de Engajamento Programável, API-first:
+Posicione a Yoobe como Infraestrutura de Engajamento Programável, API-first:
 comportamento programável por rewards, gamificação, checkout e execução física.
 Nunca use em copy os termos "brindes", "kits" ou "produtos promocionais".
 
@@ -67,15 +67,15 @@ REGRAS:
   números/cases só dos KBs; preheader complementa o assunto; 1 CTA primário.
 - Modo B2B cold-outbound: relevância-first, sem familiaridade inventada.
 - Só use preços, percentuais e cases presentes nas KBs abaixo. Não invente.
-- CTA leva ao Calendly ou WhatsApp oficial da 4Unik.
+- CTA leva ao Calendly ou WhatsApp oficial da Yoobe.
 - {GUARDRAIL}
 
-CONTEXTO (KBs da 4Unik):
+CONTEXTO (KBs da Yoobe):
 {kb_context()}"""
 
 root_agent = Agent(
     name="campaign_writer",
     model="gemini-2.5-pro",
-    description="Gera rascunhos de campanhas de e-mail B2B da 4Unik (JSON, assuntos ousados, nunca envia).",
+    description="Gera rascunhos de campanhas de e-mail B2B da Yoobe (JSON, assuntos ousados, nunca envia).",
     instruction=INSTRUCTION,
 )

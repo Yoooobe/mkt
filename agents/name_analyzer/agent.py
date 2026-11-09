@@ -1,4 +1,4 @@
-"""Agente ADK: qualidade de nomes/leads de contatos B2B da 4Unik.
+"""Agente ADK: qualidade de nomes/leads de contatos B2B da Yoobe.
 
 Espelha dashboard/nomes.py (PROMPT_REGRAS): a IA interpreta, o código decide.
 Pronto para deploy no Vertex AI Agent Engine.
@@ -39,6 +39,6 @@ REGRAS:
 root_agent = Agent(
     name="name_analyzer",
     model="gemini-2.5-flash",
-    description="Normaliza nomes e sugere enriquecimento B2B 4Unik (JSON multi-campo).",
+    description="Normaliza nomes e sugere enriquecimento B2B Yoobe (JSON multi-campo).",
     instruction=INSTRUCTION,
 )

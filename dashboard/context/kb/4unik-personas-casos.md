@@ -1,4 +1,4 @@
-# 4Unik — Personas, dores e casos de uso
+# Yoobe — Personas, dores e casos de uso
 
 ## Personas principais
 - **RH / People / Endomarketing**: quer reconhecimento, onboarding, engajamento, clima, eNPS e retenção sem virar operação de compras e logística.

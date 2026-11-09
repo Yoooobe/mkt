@@ -1,6 +1,6 @@
 # lead-quality Worker (Firecrawl + Queue)
 
-Scrape público off critical path para validação de leads do 4unik.mail.
+Scrape público off critical path para validação de leads do Yoobe.mail.
 
 ## Fluxo
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4unik.mail — backend Vertex AI (Gemini) para as gerações de IA do dashboard.
+"""Yoobe.mail — backend Vertex AI (Gemini) para as gerações de IA do dashboard.
 
 Chama generateContent via REST (mesmo padrão do lib/llm.ts do projeto afiliados),
 autenticando com a service account do projeto GCP mkt-4unik. JSON mode
@@ -50,7 +50,7 @@ MODEL_FLASH = env_get("VERTEX_MODEL_FLASH", "gemini-2.5-flash")
 
 def _load_sa_info():
     raw = env_get("VERTEX_CREDENTIALS_JSON",
-                  os.path.expanduser("~/.config/4unik/vertex-sa.json")).strip()
+                  os.path.expanduser("~/.config/Yoobe/vertex-sa.json")).strip()
     if not raw:
         raise RuntimeError("VERTEX_CREDENTIALS_JSON não configurado (dashboard/.env)")
     if raw.startswith("{"):

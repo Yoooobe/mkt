@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4unik.mail — motor de fila persistente, resiliência e cadência de campanhas.
+"""Yoobe.mail — motor de fila persistente, resiliência e cadência de campanhas.
 
 Princípios (mesmos do proposal_monitor.py): a IA sugere, o CÓDIGO decide.
 - Nada roda só em memória: todo trabalho vira item na tabela queue.
@@ -53,7 +53,7 @@ def _load_env_files():
 
 
 ENV = _load_env_files()
-DEFAULT_REPLY_TO_EMAIL = ENV.get("DEFAULT_REPLY_TO_EMAIL", "comercial@4unik.com.br").strip().lower()
+DEFAULT_REPLY_TO_EMAIL = ENV.get("DEFAULT_REPLY_TO_EMAIL", "corporate@yoobe.co").strip().lower()
 
 # Automação de respostas (reusa monitor_config.env). FASE 1 = AUTO_REPLY=off (só notifica).
 AUTO_REPLY_ON = ENV.get("AUTO_REPLY", "off") == "on"
@@ -486,9 +486,9 @@ def pode_enviar(c, camp, contato, cc, tpl, manual_immediate=False):
     _vstatus = (contato.get("validacao_status") or "").strip().lower()
     if _vstatus in db.VALIDACAO_BLOQUEIA:
         return False, f"contato validação={_vstatus} — não recebe mais"
-    # defesa em profundidade: cliente 4unik só recebe se o Genal confirmou QUERO_ENVIAR
+    # defesa em profundidade: cliente Yoobe só recebe se o Genal confirmou QUERO_ENVIAR
     if db.contato_eh_cliente(contato.get("tags", "")) and not camp["clientes_confirmados"]:
-        return False, "contato é cliente 4unik — exige confirmação QUERO_ENVIAR na ativação"
+        return False, "contato é cliente Yoobe — exige confirmação QUERO_ENVIAR na ativação"
     if not tpl or tpl["status"] != "aprovado":
         return False, "template não aprovado pelo Genal"
     if _toques_30d(c, contato["email"]) >= MAX_TOQUES_30D:
@@ -527,15 +527,17 @@ def _thread_na_caixa(thread_id, home):
 
 def enviar_email(contato, assunto, html, texto_plano, thread_id="", campaign_id=None, etapa="", sender=None):
     import uuid
+    if campaign_id and (sender or {}).get("email", "").strip().lower() != "genau@yoobe.co":
+        raise RuntimeError("Campanhas novas só podem ser enviadas por genau@yoobe.co")
     track_id = uuid.uuid4().hex
-    utm = {"utm_source": "4unik-mail", "utm_medium": "email"}
+    utm = {"utm_source": "yoobe-mail", "utm_medium": "email"}
     if campaign_id:
         utm["utm_campaign"] = db.campaign_slug(campaign_id)
         if etapa:
             utm["utm_content"] = f"etapa{etapa}"
     html = inject_tracking(html, track_id, contato["email"], campaign_id, etapa, utm=utm)
     home = gws_home(sender)
-    de = f"{sender['nome']} <{sender['email']}>" if sender else "Time 4Unik <comercial@4unik.com.br>"
+    de = f"{sender['nome']} <{sender['email']}>" if sender else "Yoobe <genau@yoobe.co>"
     msg = MIMEMultipart("alternative")
     msg["From"] = de
     msg["Reply-To"] = DEFAULT_REPLY_TO_EMAIL
@@ -557,8 +559,8 @@ def enviar_email(contato, assunto, html, texto_plano, thread_id="", campaign_id=
         body["threadId"] = thread_id
     msg["Subject"] = assunto
     plain = texto_plano or re.sub(r"<[^>]+>", " ", html)
-    canais = "WhatsApp 4Unik: +55 11 2684-4724\nE-mail comercial: comercial@4unik.com.br"
-    if "comercial@4unik.com.br" not in plain:
+    canais = "Yoobe: https://corporate.yoobe.co/\nCatálogo: https://catalogo.yoobe.co/\nE-mail: corporate@yoobe.co"
+    if "corporate@yoobe.co" not in plain:
         plain = plain.rstrip() + "\n\n" + canais
     msg.attach(MIMEText(plain, "plain", "utf-8"))
     msg.attach(MIMEText(html, "html", "utf-8"))
@@ -868,9 +870,9 @@ def _hook_clique(ev):
 def _track_contact_goal(ev):
     """Espelha cliques nos canais oficiais como eventos-chave GA4, sem enviar PII."""
     url = (ev.get("url") or "").lower()
-    if "wa.me/551126844724" in url:
+    if "wa.me/5541987607512" in url:
         event_name, method = "contact_whatsapp", "whatsapp"
-    elif url.startswith("mailto:comercial@4unik.com.br"):
+    elif url.startswith("mailto:corporate@yoobe.co"):
         event_name, method = "contact_email", "email"
     else:
         return False
@@ -881,9 +883,9 @@ def _track_contact_goal(ev):
         return ga4.mp_send_event(event_name, {
             "contact_method": method, "campaign_id": cid or 0,
             "campaign_slug": slug, "utm_campaign": slug,
-            "utm_source": "4unik-mail", "utm_medium": "email",
+            "utm_source": "yoobe-mail", "utm_medium": "email",
             "etapa": str(ev.get("etapa") or ""), "engagement_time_msec": 1,
-            "page_location": ("https://plataforma.4unik.com.br/?utm_source=4unik-mail"
+            "page_location": ("https://corporate.yoobe.co/?utm_source=yoobe-mail"
                               f"&utm_medium=email&utm_campaign={slug}"),
             "page_title": "Contato comercial via campanha de e-mail",
         })
@@ -946,7 +948,7 @@ def _html_resposta(paragrafos, botao=None, assinatura=None):
                f'font-size:14px;font-weight:700;color:#22093a;text-decoration:none">{rotulo}</a></td></tr></table>')
     return (f'<div style="font-family:\'DM Sans\',Arial,sans-serif;font-size:15px;color:#1a0a2e;line-height:1.6;max-width:600px">'
             f'{ps}{btn}<p style="margin:18px 0 6px">Atenciosamente,</p>'
-            f'<img src="{assinatura}" width="320" height="85" alt="4unik" '
+            f'<img src="{assinatura}" width="320" height="85" alt="Yoobe" '
             f'style="display:block;border-radius:8px;max-width:320px"></div>')
 
 
@@ -965,7 +967,7 @@ def _responder_lead(reply_to_msg, thread_id, texto, botao=None, sender=None):
         log(f"AUTO-RESPOSTA abortada: assunto bounce ({subj_chk[:60]})")
         return None
     home = gws_home(sender)
-    de = f"{sender['nome']} <{sender['email']}>" if sender else "Time 4Unik <comercial@4unik.com.br>"
+    de = f"{sender['nome']} <{sender['email']}>" if sender else "Yoobe <genau@yoobe.co>"
     assinatura = (sender or {}).get("signature_url") or None
     msg = MIMEMultipart("alternative")
     msg["From"] = de
@@ -1113,7 +1115,7 @@ def processar_resposta(ct, historico, corpo, msg, frm, sender=None):
     c.close()
 
     ok, motivo = _pode_auto_responder(classe, conf, precisa_humano, ct["thread"], sender)
-    quem = (sender or {}).get("email", "comercial@4unik.com.br")
+    quem = (sender or {}).get("email", "corporate@yoobe.co")
     acao = "escalada"
     if ok:
         botao = ("📅 Escolher horário na agenda", ai.CALENDLY) if classe in ("agendar", "interessado") else None
@@ -1240,13 +1242,13 @@ def scan_calendly():
         email = ""
         for e in re.findall(r"mailto:([\w.+-]+@[\w.-]+\.\w+)", html):
             el = e.lower()
-            if "calendly" not in el and "4unik" not in el:
+            if "calendly" not in el and "Yoobe" not in el:
                 email = el
                 break
         if not email:
             for e in re.findall(r"[\w.+-]+@[\w.-]+\.\w+", re.sub(r"<[^>]+>", " ", html)):
                 el = e.lower()
-                if "calendly" not in el and "4unik" not in el and "sentry" not in el:
+                if "calendly" not in el and "Yoobe" not in el and "sentry" not in el:
                     email = el
                     break
         partes = [p.strip() for p in subj.split(" - ")]
@@ -1367,7 +1369,7 @@ def registrar_bounce_de_mensagem(msg, sender=None, failed_email=""):
     mid = msg["id"]
     corpo = _corpo_texto(msg.get("payload") or {}) or ""
     failed = (failed_email or _extract_failed_recipient(msg, corpo) or "").strip().lower()
-    if not failed or "4unik" in failed:
+    if not failed or "Yoobe" in failed:
         return None
     tipo = "hard" if BOUNCE_HARD.search(corpo) else "soft"
     # Subject Undeliverable + wasn't found → forçar hard
@@ -1530,6 +1532,13 @@ def _h_campaign_send(payload):
     if not (camp and contato and cc and steps):
         c.close()
         return "item órfão — ignorado"
+    sender = db.sender_get(camp["sender_id"] or 0)
+    if not sender or (sender.get("email") or "").strip().lower() != "genau@yoobe.co":
+        c.execute("UPDATE campaign_contacts SET status='pendente',next_send_at=NULL WHERE campaign_id=? AND email=?",
+                  (cid, email))
+        c.commit()
+        c.close()
+        return "bloqueado: campanha legado não envia por remetente antigo"
     # Uma tarefa antiga/duplicada nunca pode reenviar uma etapa já avançada.
     # A fila é protegida atomicamente, e esta é a segunda trava junto ao estado
     # atual do contato na campanha.
@@ -1592,7 +1601,6 @@ def _h_campaign_send(payload):
             c.close()
             return "contato respondeu na thread — sequência interrompida"
 
-    sender = db.sender_get(camp["sender_id"] or 1) or db.sender_default()
     assunto, html = render_html(step["template_ref"], contato_d, sender, cid)
     plain = render_vars(tpl.get("texto_plano") or "", contato_d)
     sent_id, thread_id, track_id = enviar_email(contato_d, assunto, html, plain,
@@ -1723,7 +1731,7 @@ def _process_queue_item(item):
         if attempts >= MAX_ATTEMPTS:
             cu.execute("UPDATE queue SET status='failed', attempts=?, updated_at=?, error=? WHERE id=?",
                        (attempts, db.now(), str(e)[:300], item["id"]))
-            whatsapp(f"⚠️ *4unik.mail*: item #{item['id']} ({item['tipo']}) falhou "
+            whatsapp(f"⚠️ *Yoobe.mail*: item #{item['id']} ({item['tipo']}) falhou "
                      f"{MAX_ATTEMPTS}x e foi marcado como failed.\nErro: {str(e)[:150]}")
         else:
             backoff = (datetime.now() + timedelta(minutes=5 * attempts)).strftime("%Y-%m-%d %H:%M:%S")
@@ -1805,7 +1813,7 @@ def process_cycle():
 
     db.meta_set("last_successful_run", db.now())
     if gap_h > GAP_AVISO_HORAS:
-        whatsapp(f"🔌 *4unik.mail de volta*: fiquei {gap_h:.1f}h offline.\n"
+        whatsapp(f"🔌 *Yoobe.mail de volta*: fiquei {gap_h:.1f}h offline.\n"
                  f"Processei {resultado['processados']} item(ns) da fila "
                  f"({resultado['continuados']} envio(s) continuados, "
                  f"{resultado['aguardando_frank']} contato(s) aguardando você), "

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4unik.mail — cliente Grok (Vertex OpenAPI partner + fallback xAI direto).
+"""Yoobe.mail — cliente Grok (Vertex OpenAPI partner + fallback xAI direto).
 
 Grok na Vertex usa Chat Completions OpenAI-compat em
 `.../endpoints/openapi/chat/completions` (não o generateContent do Gemini).

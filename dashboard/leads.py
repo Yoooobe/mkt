@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4unik.mail — validação/enriquecimento de leads (Firecrawl econômico + Vertex).
+"""Yoobe.mail — validação/enriquecimento de leads (Firecrawl econômico + Vertex).
 
 Orquestra: scrape_planner → Firecrawl (≤1 crédito) → lead_validator → CRM.
 """
@@ -20,7 +20,7 @@ import firecrawl
 import nomes
 import vertex
 
-PROMPT_VALIDATOR = """Você é um validador de QUALIDADE DE LEADS B2B da 4Unik (Brasil).
+PROMPT_VALIDATOR = """Você é um validador de QUALIDADE DE LEADS B2B da Yoobe (Brasil).
 Com base nos DADOS DO CRM e na EVIDÊNCIA PÚBLICA (Firecrawl), avalie se o contato
 ainda é útil para e-mail comercial. Não invente fatos fora da evidência.
 

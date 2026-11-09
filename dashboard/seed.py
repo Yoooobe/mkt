@@ -1,83 +1,81 @@
 #!/usr/bin/env python3
-"""4unik.mail — seed de remetentes e campanha exemplo."""
+"""Yoobe mail — seed de remetentes e campanha exemplo."""
 import db
 
-DEMO = "https://calendly.com/4unik/30min?month=2026-07"
-API_PAGE = "https://plataforma.4unik.com.br/landing/api-integracoes/"
+DEMO = "https://corporate.yoobe.co/"
+API_PAGE = "https://corporate.yoobe.co/platform/"
 
 P = lambda t: f'<p style="margin:0 0 16px">{t}</p>'
 H = lambda t: f'<h1 style="margin:0 0 18px;font-family:Montserrat,Arial,sans-serif;font-size:22px;font-weight:800;color:#0f1720;line-height:1.3">{t}</h1>'
 
 EMAIL_1 = dict(
-    nome="4Unik 1 — Dor operacional",
+    nome="Yoobe 1 — Operação de recompensas",
     assunto="{{empresa}} ainda opera reconhecimento com planilha?",
-    preheader="A 4Unik junta gamificacao, loja corporativa, carteiras e fulfillment.",
-    cta="Agendar demo da 4Unik",
+    preheader="A Yoobe conecta campanhas, catálogo corporativo e fulfillment.",
+    cta="Conhecer a plataforma Yoobe",
     cta_url=DEMO,
     inner_html=(
         H('Reconhecimento bom nao deveria virar<br><span style="color:#1fbf9c">operacao manual.</span>')
         + P("Olá, {{nome}}. Tudo bem?")
         + P("Programas de incentivo comecam simples: uma meta, um premio, uma campanha interna. O problema aparece quando o RH precisa comprar, armazenar, enviar, rastrear e ainda provar ROI.")
-        + P("A <b>4Unik</b> resolve essa camada como infraestrutura de recompensas: motor de campanhas, pontos/carteiras, loja corporativa, catalogo e fulfillment em uma unica operacao.")
+        + P("A <b>Yoobe</b> conecta campanhas, recompensas, catálogo corporativo e fulfillment em uma única plataforma.")
         + P("Se fizer sentido para a <b>{{empresa}}</b>, marcamos uma demo curta para mapear um primeiro caso de uso.")),
     texto_plano=("Olá, {{nome}}. Tudo bem?\n\n"
-                 "Programas de incentivo comecam simples: uma meta, um premio, uma campanha interna. "
-                 "O problema aparece quando o RH precisa comprar, armazenar, enviar, rastrear e ainda provar ROI.\n\n"
-                 "A 4Unik resolve essa camada como infraestrutura de recompensas: motor de campanhas, pontos/carteiras, "
-                 "loja corporativa, catalogo e fulfillment em uma unica operacao.\n\n"
+                 "Programas de incentivo começam simples: uma meta, um prêmio, uma campanha interna. "
+                 "O problema aparece quando o RH precisa comprar, armazenar, enviar, rastrear e provar ROI.\n\n"
+                 "A Yoobe conecta campanhas, recompensas, catálogo corporativo e fulfillment em uma única plataforma.\n\n"
                  f"Podemos marcar uma demo curta? {DEMO}\n\n"
-                 "Atenciosamente,\nTime 4Unik"),
+                 "Atenciosamente,\nTime Yoobe"),
     offset=0)
 
 EMAIL_2 = dict(
-    nome="4Unik 2 — API e stack",
+    nome="Yoobe 2 — Plataforma e catálogo",
     assunto="Recompensas reais como uma chamada de API",
-    preheader="API REST, webhooks, sandbox, SDKs e fulfillment por tras da experiencia.",
-    cta="Conhecer API e integrações",
-    cta_url=API_PAGE,
+    preheader="Plataforma corporativa e catálogo em experiências integradas.",
+    cta="Ver o catálogo Yoobe",
+    cta_url="https://catalogo.yoobe.co/",
     inner_html=(
         H('Da meta batida ao premio entregue,<br><span style="color:#1fbf9c">sem construir tudo do zero.</span>')
-        + P("{{nome}}, a 4Unik pode operar como plataforma completa ou como camada API-first dentro do stack da {{empresa}}.")
-        + P("Sua ferramenta dispara o evento; a 4Unik cuida de catalogo, saldo, checkout, envio, rastreio e webhooks de status.")
-        + P("Isso funciona para RH, vendas, e-learning, eventos, comunidades e plataformas SaaS que querem oferecer recompensa fisica sem virar operacao logistica.")),
-    texto_plano=("{{nome}}, a 4Unik pode operar como plataforma completa ou como camada API-first dentro do stack da {{empresa}}.\n\n"
-                 "Sua ferramenta dispara o evento; a 4Unik cuida de catalogo, saldo, checkout, envio, rastreio e webhooks de status.\n\n"
+        + P("{{nome}}, a Yoobe conecta sua plataforma corporativa a um catálogo de produtos e experiências para colaboradores, clientes e parceiros.")
+        + P("Conheça a plataforma em <a href=\"https://corporate.yoobe.co/\">corporate.yoobe.co</a> e explore o catálogo em <a href=\"https://catalogo.yoobe.co/\">catalogo.yoobe.co</a>.")),
+    texto_plano=("{{nome}}, a Yoobe conecta sua plataforma corporativa a um catálogo de produtos e experiências para colaboradores, clientes e parceiros.\n\n"
+                 "Conheça a plataforma: https://corporate.yoobe.co/\n"
+                 "Explore o catálogo: https://catalogo.yoobe.co/\n\n"
                  f"API e integracoes: {API_PAGE}\n\n"
-                 "Atenciosamente,\nTime 4Unik"),
+                 "Atenciosamente,\nTime Yoobe"),
     offset=4)
 
 EMAIL_3 = dict(
-    nome="4Unik 3 — ROI e demo",
+    nome="Yoobe 3 — ROI e conversa",
     assunto="Como provar ROI de uma campanha de reconhecimento?",
-    preheader="Budget, taxa de resgate, eNPS e SLA no painel da 4Unik.",
+    preheader="Conecte campanhas corporativas a produtos e experiências Yoobe.",
     cta="Conversar com especialista",
     cta_url=DEMO,
     inner_html=(
         H('Campanha sem dados vira custo.<br><span style="color:#1fbf9c">Campanha com dados vira decisao.</span>')
-        + P("{{nome}}, o diferencial da 4Unik não é só entregar premios. É dar governanca para o programa: centros de custo, saldo, extrato, aprovacoes, taxa de resgate, SLA e relatorios.")
+        + P("{{nome}}, a Yoobe ajuda sua empresa a transformar campanhas de reconhecimento em experiências concretas para colaboradores, clientes e parceiros.")
         + P("Se a {{empresa}} quer testar um programa de onboarding, vendas, treinamento ou reconhecimento interno, podemos desenhar um piloto com indicadores claros desde o primeiro dia.")
         + P("Vale uma conversa de 20 minutos?")),
-    texto_plano=("{{nome}}, o diferencial da 4Unik não é só entregar premios. "
-                 "É dar governanca para o programa: centros de custo, saldo, extrato, aprovacoes, taxa de resgate, SLA e relatorios.\n\n"
+    texto_plano=("{{nome}}, a Yoobe ajuda sua empresa a transformar campanhas de reconhecimento em experiências concretas para colaboradores, clientes e parceiros.\n\n"
                  "Se a {{empresa}} quer testar um programa de onboarding, vendas, treinamento ou reconhecimento interno, "
                  "podemos desenhar um piloto com indicadores claros desde o primeiro dia.\n\n"
                  f"Agenda: {DEMO}\n\n"
-                 "Atenciosamente,\nTime 4Unik"),
+                 "Atenciosamente,\nTime Yoobe"),
     offset=10)
 
 
 def seed_campanha_reativacao():
-    """Compatibilidade com app.py antigo: cria uma campanha exemplo da 4Unik."""
-    if db.meta_get("seed_4unik_intro_2026"):
-        return int(db.meta_get("seed_4unik_intro_2026"))
+    """Cria a campanha inicial de exemplo para Yoobe."""
+    existing = db.meta_get("seed_yoobe_intro_2026") or db.meta_get("seed_4unik_intro_2026")
+    if existing:
+        return int(existing)
     c = db.conn()
     c.execute("""INSERT INTO campaigns(nome,objetivo,tipo,status,contexto) VALUES(?,?,?,?,?)""",
-              ("4Unik Intro — Reward Infrastructure",
-               "Campanha exemplo para apresentar a 4Unik como infraestrutura de recompensas: "
-               "dor operacional, stack/API e ROI. Importar uma base propria antes de ativar.",
+              ("Yoobe — Catálogo e plataforma corporativa",
+               "Campanha exemplo para apresentar a plataforma corporativa e o catálogo da Yoobe. "
+               "Importar e revisar uma audiência antes de ativar.",
                "finita", "rascunho",
-               "Baseado no site plataforma.4unik.com.br: reward infrastructure, gamificacao, "
-               "carteiras, loja corporativa, API/webhooks, fulfillment e governanca."))
+               "Contexto público: https://corporate.yoobe.co/ e https://catalogo.yoobe.co/."))
     cid = c.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
     for i, e in enumerate((EMAIL_1, EMAIL_2, EMAIL_3), start=1):
         c.execute("""INSERT INTO templates_ai(nome,assunto,preheader,cta,cta_url,inner_html,texto_plano,status,origem)
@@ -89,14 +87,13 @@ def seed_campanha_reativacao():
                   (cid, i, f"ai:{tid}", e["offset"]))
     c.commit()
     c.close()
-    db.meta_set("seed_4unik_intro_2026", cid)
-    print(f"campanha #{cid} '4Unik Intro — Reward Infrastructure' criada em rascunho")
+    db.meta_set("seed_yoobe_intro_2026", cid)
+    print(f"campanha #{cid} Yoobe criada em rascunho")
     return cid
 
 
 SENDERS = [
-    ("comercial@4unik.com.br", "Comercial 4Unik", "Prospeccao e demos", "", "off"),
-    ("contato@4unik.com.br", "4Unik", "Relacionamento e newsletters", "contato", "off"),
+    ("genau@yoobe.co", "Genau", "Campanhas Yoobe", "genau", "off"),
 ]
 
 

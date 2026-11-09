@@ -1,4 +1,4 @@
-# 4Unik — Cadências e regras para email marketing
+# Yoobe — Cadências e regras para email marketing
 
 ## Cadência inicial recomendada
 - Email 1 D+0: dor operacional. Reconhecimento e incentivo viram planilha, compras, frete e suporte.
@@ -15,12 +15,12 @@
 - {{modulo}} pode ser usado como caso de uso desejado: RH, vendas, e-learning, SaaS, eventos.
 
 ## CTAs aprovados
-- Agendar demo da 4Unik.
+- Agendar demo da Yoobe.
 - Ver API e integrações.
 - Conhecer campanhas de gamificação.
 - Responder com o caso de uso prioritário: onboarding, vendas, treinamento, evento ou reconhecimento.
-- Falar no WhatsApp oficial: +55 11 2684-4724 (https://wa.me/551126844724).
-- Enviar e-mail para comercial@4unik.com.br.
+- Falar no WhatsApp oficial: +55 41 98760-7512 (https://wa.me/5541987607512).
+- Enviar e-mail para corporate@yoobe.co.
 
 ## Regras de conteúdo
 - Não inventar preços, descontos, SLAs ou cases fora do contexto.

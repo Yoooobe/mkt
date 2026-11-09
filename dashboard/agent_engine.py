@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4unik.mail — cliente Vertex AI Agent Engine + fallback generate_json.
+"""Yoobe.mail — cliente Vertex AI Agent Engine + fallback generate_json.
 
 Quando VERTEX_AGENT_* está configurado, consulta o agente remoto (ADK deploy).
 Caso contrário (ou em falha), usa vertex.generate_json com o mesmo prompt.

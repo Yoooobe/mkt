@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4unik.mail — inteligência de qualidade de nomes/leads (a IA entende; o código decide).
+"""Yoobe.mail — inteligência de qualidade de nomes/leads (a IA entende; o código decide).
 
 Muitos contatos vieram com `nome` derivado da parte local do e-mail ("Danielpassosmartins",
 "Iubtelecom", "Comercial"). Este módulo separa o joio do trigo em 2 passos:

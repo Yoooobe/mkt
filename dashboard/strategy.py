@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ciclo local de estratégia do 4unik.mail.
+"""Ciclo local de estratégia do Yoobe.mail.
 
 Não invoca skills do Codex nem cria/envia campanhas: consolida as capacidades
 existentes do dashboard em um retrato seguro e auditável para o time comercial.
@@ -147,7 +147,7 @@ def _seo_geo_grok_recs(snapshot: dict) -> list:
             "dias": snapshot.get("dias") or 28,
         }
         out = grok.generate_json(
-            f"""Você é o crítico SEO/GEO da 4Unik (B2B rewards / loyalty / incentivos).
+            f"""Você é o crítico SEO/GEO da Yoobe (B2B rewards / loyalty / incentivos).
 Com base no snapshot GA4 abaixo, devolva SOMENTE JSON:
 {{"recomendacoes":[{{"titulo":"...","acao":"1-2 frases práticas","prioridade":"alta|média|baixa","evidencia":"dado do snapshot"}}]}}
 Regras: no máximo 3 itens; não invente métricas; não proponha publicar/alterar o site

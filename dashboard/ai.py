@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""4unik.mail — criação de campanhas e templates com IA (claude -p headless).
+"""Yoobe.mail — criação de campanhas e templates com IA (claude -p headless).
 
 A IA usa o contexto de dashboard/context/ (KBs em kb/, imagens em images/)
 para redigir campanhas e templates. Guardrail: TUDO que a IA cria nasce com
 status 'pendente' (template) e 'rascunho' (campanha) — nada é enviável antes
-da aprovação explícita da 4Unik no dashboard.
+da aprovação explícita da Yoobe no dashboard.
 """
 import contextvars
 import json
@@ -29,7 +29,7 @@ import vertex
 _run_token_ctx: contextvars.ContextVar[str] = contextvars.ContextVar(
     "build_run_token", default="")
 
-# Modelo usado nas chamadas de IA do 4unik.mail (criação de campanhas/templates).
+# Modelo usado nas chamadas de IA do Yoobe.mail (criação de campanhas/templates).
 CLAUDE_MODEL = os.environ.get("FOURUNIK_MAIL_MODEL", "opus")
 
 # Provider da IA: "vertex" (Gemini no projeto GCP mkt-4unik, default) ou
@@ -62,7 +62,7 @@ def _subprocess_env():
             env.pop(key, None)
     return env
 
-CALENDLY = "https://calendly.com/4unik/30min?month=2026-07"
+CALENDLY = "https://corporate.yoobe.co/"
 CONTEXT_DIR = db.BASE / "context"
 KB_DIR = CONTEXT_DIR / "kb"
 IMG_DIR = CONTEXT_DIR / "images"
@@ -97,7 +97,7 @@ _SKILL_COMMUNITY = {
 # e ICPs; este guia fixa o formato e impede que a IA volte ao enquadramento de
 # fornecedor de brindes em e-mails, anúncios ou briefings.
 GUIA_GTM_CAMPANHAS = """GUIA GTM OBRIGATÓRIO:
-- Posicione a 4Unik como Infraestrutura de Engajamento Programável, API-first:
+- Posicione a Yoobe como Infraestrutura de Engajamento Programável, API-first:
   comportamento programável por rewards, gamificação, checkout e execução física.
 - Nunca use em copy os termos "brindes", "kits" ou "produtos promocionais". Prefira
   rewards, behavioral triggers, camada de execução física, checkout transparente e fulfillment automatizado.
@@ -114,7 +114,7 @@ GUIA_GTM_CAMPANHAS = """GUIA GTM OBRIGATÓRIO:
 # Skill Email Creative Builder (aaron-he-zhu / Apache-2.0) — craft ousado de assunto/corpo.
 # Fonte: 0-skill-email-creative-builder.md + subject-specs + modes (sync_skill_kbs).
 GUIA_EMAIL_CREATIVE = """GUIA EMAIL CREATIVE (skill email-creative-builder · aaron-he-zhu · Apache-2.0):
-- Modo padrão 4Unik: B2B cold-outbound. Personalize em sinal real (cargo/empresa/dor); sem familiaridade inventada.
+- Modo padrão Yoobe: B2B cold-outbound. Personalize em sinal real (cargo/empresa/dor); sem familiaridade inventada.
 - ASSUNTOS OUSADOS: assunto principal + EXATAMENTE 3 assuntos_alternativos com ângulos DISTINTOS
   (ex.: curiosidade, benefício concreto, especificidade numérica dos KBs, pergunta, contraste/guerrilha).
   Prefira ganchos específicos e ousados; evite genéricos ("oportunidade", "parceria", "solução inovadora").
@@ -122,18 +122,18 @@ GUIA_EMAIL_CREATIVE = """GUIA EMAIL CREATIVE (skill email-creative-builder · aa
   Respeite limites de inbox (~40–60 chars preferível; truncar com graça). Preheader complementa, não repete.
 - Corpo: escaneável, uma ideia por parágrafo, UM CTA primário alinhado ao destino (Calendly/WhatsApp).
 - Message-match: o e-mail não promete o que o destino/KBs não sustentam. Não invente preço, case ou %.
-- De-slop: corte frases de IA ("no mundo de hoje", "revolucionar", "synergy"). Tom humano Time 4Unik.
+- De-slop: corte frases de IA ("no mundo de hoje", "revolucionar", "synergy"). Tom humano Time Yoobe.
 - Use os KBs 0-skill-email-creative-builder / 0-skill-email-subject-specs / 0-skill-email-creative-modes
   como craft guide; o GTM guide acima continua mandatório para posicionamento."""
 
 # Metadados de crédito para KBs sincronizados de skills externos.
 _SKILL_KB_CREDITS = {
     "0-skill-gtm-growth.md": {
-        "origem": "gtm-engineer-growth-specialist", "licenca": "interno", "autor": "4Unik/GTM"},
+        "origem": "gtm-engineer-growth-specialist", "licenca": "interno", "autor": "Yoobe/GTM"},
     "0-skill-platform-growth.md": {
-        "origem": "gtm-engineer-growth-specialist", "licenca": "interno", "autor": "4Unik/GTM"},
+        "origem": "gtm-engineer-growth-specialist", "licenca": "interno", "autor": "Yoobe/GTM"},
     "0-skill-competitive-landscape.md": {
-        "origem": "gtm-engineer-growth-specialist", "licenca": "interno", "autor": "4Unik/GTM"},
+        "origem": "gtm-engineer-growth-specialist", "licenca": "interno", "autor": "Yoobe/GTM"},
     "0-skill-email-creative-builder.md": {
         "origem": "aaron-marketing-skills/email-creative-builder",
         "licenca": "Apache-2.0", "autor": "aaron-he-zhu",
@@ -162,7 +162,7 @@ GUIA_COPY_GROWTH = """GUIA COPY + GROWTH (skills community):
 - copy-editing: passes focados (clareza, especificidade, CTA, ritmo) sem mudar o posicionamento GTM.
 - email-sequence: cada e-mail tem UM job; ângulos distintos na cadência; nurture → conversão com CTA único.
 - growth-engine: funil mensurável (atração → conversão → retenção) com UTM/GA4; hipótese testável, não spray-and-pray.
-- Claims e números só dos KBs 4Unik / GTM. Skills community são craft — não fonte de prova comercial."""
+- Claims e números só dos KBs Yoobe / GTM. Skills community são craft — não fonte de prova comercial."""
 
 
 def _sync_skill_pairs(skill_dirs, alvos_fn):
@@ -251,7 +251,7 @@ def seed_skill_knowledge():
     """Grava resumo dos skills ativos em agent_knowledge (idempotente por título)."""
     entries = [
         ("estrategista_gtm", "Skill ativo: gtm-engineer-growth-specialist",
-         "Posicionamento 4Unik API-first, ICPs, funil, ROI e GA4. Fonte: 0-skill-gtm-growth + platform + competitive-landscape.",
+         "Posicionamento Yoobe API-first, ICPs, funil, ROI e GA4. Fonte: 0-skill-gtm-growth + platform + competitive-landscape.",
          "skill,gtm,growth"),
         ("copywriter", "Skill ativo: email-creative-builder (Apache-2.0 · aaron-he-zhu)",
          "Craft de assunto ousado, preheader, corpo escaneável e CTA único (B2B cold-outbound). Crédito Apache-2.0.",
@@ -260,7 +260,7 @@ def seed_skill_knowledge():
          "Copy de conversão sem fabricar prova; clareza e CTA alinhados ao ICP. Digest em 0-skill-copywriting.md.",
          "skill,copywriting"),
         ("editor", "Skill ativo: copy-editing (community)",
-         "Seven sweeps de edição preservando mensagem e voice 4Unik. Digest em 0-skill-copy-editing.md.",
+         "Seven sweeps de edição preservando mensagem e voice Yoobe. Digest em 0-skill-copy-editing.md.",
          "skill,copy-editing"),
         ("estrategista", "Skill ativo: email-sequence (community)",
          "Cadência com um job por e-mail e ângulos distintos. Digest em 0-skill-email-sequence.md.",
@@ -288,7 +288,7 @@ def seed_skill_knowledge():
 
 
 def _kb_priority(name: str) -> int:
-    """4Unik claims primeiro; skills craft depois; resto por último."""
+    """Yoobe claims primeiro; skills craft depois; resto por último."""
     if name.startswith("4unik-") or name == "criativo.md":
         return 0
     if name.startswith("0-skill-"):
@@ -297,7 +297,7 @@ def _kb_priority(name: str) -> int:
 
 
 def contexto(max_chars=MAX_KB_CHARS):
-    """Concatena os KBs (prioridade 4Unik → skills → resto) e lista imagens."""
+    """Concatena os KBs (prioridade Yoobe → skills → resto) e lista imagens."""
     files = sorted(KB_DIR.glob("*.md"), key=lambda f: (_kb_priority(f.name), f.name))
     partes = []
     for f in files:
@@ -440,7 +440,7 @@ def sugerir_enriquecimento_contato(contato):
 
 
 GUIA_HTML = """REGRAS DO HTML (inner_html = só o miolo; a moldura oficial shell() é aplicada pelo sistema):
-- Estilo inline Gmail-safe, identidade 4Unik: títulos <h1 style="margin:0 0 18px;font-family:Montserrat,Arial,sans-serif;font-size:22px;font-weight:800;color:#0f1720;line-height:1.3"> com spans de destaque color:#1fbf9c; parágrafos <p style="margin:0 0 16px">.
+- Estilo inline Gmail-safe, identidade Yoobe: títulos <h1 style="margin:0 0 18px;font-family:Montserrat,Arial,sans-serif;font-size:22px;font-weight:800;color:#0f1720;line-height:1.3"> com spans de destaque color:#1fbf9c; parágrafos <p style="margin:0 0 16px">.
 - Cards: <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0"><tr><td style="border-left:4px solid COR;background-color:#f6f8f9;border-radius:0 10px 10px 0;padding:16px 20px">…</td></tr></table> (COR: #1fbf9c padrão, #66e3c4 benefício, #f2c94c oferta, #ef7d7d dor).
 - REGRA DO CTA (obrigatória): NUNCA coloque botão no inner_html — nenhuma âncora estilizada
   como botão (display:inline-block, background, padding). O SISTEMA renderiza o ÚNICO botão
@@ -452,14 +452,14 @@ GUIA_HTML = """REGRAS DO HTML (inner_html = só o miolo; a moldura oficial shell
 - Variáveis disponíveis: {{nome}} (SOMENTE o primeiro nome — o sistema resolve; NUNCA escreva nome completo no HTML), {{empresa}}, {{cargo}}, {{porte}}, {{erp}}, {{modulo}}, {{data_proposta}}, {{validade}}, {{mensalidade}}.
 - Saudação: comece com "{{nome}}," (vírgula). Não use sobrenome, nome completo nem ALL CAPS inventado.
 - Se citar uma imagem do contexto, use <img src="cid-imagem:NOME_DO_ARQUIVO"> para revisao antes de publicar.
-- Canais oficiais de retorno: WhatsApp +55 11 2684-4724 (https://wa.me/551126844724) e comercial@4unik.com.br. A moldura já os inclui no rodapé.
+- Canais oficiais de retorno: WhatsApp +55 41 98760-7512 (https://wa.me/5541987607512) e corporate@yoobe.co. A moldura já os inclui no rodapé.
 - NUNCA invente preços, descontos, prazos ou cases que não estejam no contexto fornecido."""
 
 
 def criar_template(briefing):
     sync_skill_kbs()
     kb, imgs = contexto()
-    res = _ai_json(f"""Você é o copywriter da 4Unik (Time 4Unik). Crie UM template de email comercial.
+    res = _ai_json(f"""Você é o copywriter da Yoobe (Time Yoobe). Crie UM template de email comercial.
 Devolva SOMENTE JSON válido, sem markdown:
 {{"nome": "nome curto do template", "assunto": "...",
  "assuntos_alternativos": ["curiosidade", "benefício/especificidade", "pergunta ou contraste"],
@@ -469,7 +469,7 @@ Devolva SOMENTE JSON válido, sem markdown:
 
 {GUIA_HTML}
 
-CONTEXTO (KBs da 4Unik):
+CONTEXTO (KBs da Yoobe):
 {kb}
 
 IMAGENS DISPONÍVEIS: {', '.join(imgs) or 'nenhuma'}
@@ -480,7 +480,7 @@ IMAGENS DISPONÍVEIS: {', '.join(imgs) or 'nenhuma'}
 
 {GUIA_COPY_GROWTH}
 
-BRIEFING DA 4UNIK: {briefing}""")
+BRIEFING DA Yoobe: {briefing}""")
     c = db.conn()
     c.execute("""INSERT INTO templates_ai(nome,assunto,preheader,cta,cta_url,inner_html,texto_plano,status,origem)
                  VALUES(?,?,?,?,?,?,?,'pendente','ia')""",
@@ -497,14 +497,14 @@ def classificar_resposta(contato, historico, resposta):
     """Interpreta a resposta de um lead usando os KBs. A IA interpreta; o código decide.
     Devolve dict (classe, confiança, precisa_humano, resposta_sugerida, resumo) ou None."""
     kb, _ = contexto()
-    prompt = f"""Você é o assistente comercial do Time 4Unik (4Unik — plataforma de automação de marketing/vendas para empresas com programas de recompensas, RH, employee experience, vendas e plataformas SaaS).
+    prompt = f"""Você é o assistente comercial do Time Yoobe (Yoobe — plataforma de automação de marketing/vendas para empresas com programas de recompensas, RH, employee experience, vendas e plataformas SaaS).
 Um lead respondeu a um e-mail de campanha. Interprete e devolva SOMENTE um JSON válido, sem markdown:
 {{"classificacao": "pergunta_simples | agendar | interessado | objecao_preco | duvida_complexa | pediu_tempo | recusa_encerrar | outro",
  "confianca": 0.0 a 1.0,
  "intencao_reuniao": true ou false,
  "precisa_humano": true ou false,
- "resposta_sugerida": "resposta pronta, cordial e direta, em pt-BR, no tom da 4Unik, terminando com 'Atenciosamente, Time 4Unik'",
- "resumo": "1-2 frases em pt-BR para o WhatsApp da 4Unik"}}
+ "resposta_sugerida": "resposta pronta, cordial e direta, em pt-BR, no tom da Yoobe, terminando com 'Atenciosamente, Time Yoobe'",
+ "resumo": "1-2 frases em pt-BR para o WhatsApp da Yoobe"}}
 
 REGRAS (NUNCA violar):
 - Responda SOMENTE com base no CONTEXTO (KBs) abaixo. Se a informação não estiver no contexto, defina precisa_humano=true e não invente.
@@ -514,7 +514,7 @@ REGRAS (NUNCA violar):
 - "objecao_preco" (achou caro/negociação), "duvida_complexa", "pediu_tempo", "outro" → precisa_humano=true.
 - Em qualquer ambiguidade, use confiança < 0.8.
 
-CONTEXTO (KBs da 4Unik):
+CONTEXTO (KBs da Yoobe):
 {kb}
 
 CONTATO: {json.dumps(contato, ensure_ascii=False)}
@@ -753,7 +753,7 @@ def _ai_json_with_heartbeat(cid, prompt, timeout=300, tier="pro"):
 
 
 REGRA_PUBLICO = ("REGRA DE PÚBLICO (NUNCA violar): prospecção NÃO tem como alvo quem já é CLIENTE "
-                 "4Unik. Escreva como abordagem a EMPRESAS B2B que ainda não são clientes.")
+                 "Yoobe. Escreva como abordagem a EMPRESAS B2B que ainda não são clientes.")
 
 
 # Mapa segmento → estratégia de copy (temperatura dominante do cohort define o bloco
@@ -761,7 +761,7 @@ REGRA_PUBLICO = ("REGRA DE PÚBLICO (NUNCA violar): prospecção NÃO tem como a
 # nunca promessas: tudo que for oferta/prova continua limitado ao que está nos KBs.
 ESTRATEGIA_FUNIL = {
     "frio": {
-        "rotulo": "FRIO / topo de funil (TOF) — o lead não lembra da 4Unik",
+        "rotulo": "FRIO / topo de funil (TOF) — o lead não lembra da Yoobe",
         "diretrizes": (
             "- Abra com pattern interrupt: primeira linha inesperada, específica e curta; nada de 'espero que esteja bem'.\n"
             "- Gancho de curiosidade ou guerrilha: contraste provocador, pergunta incômoda sobre a operação, benchmark do setor.\n"
@@ -818,16 +818,16 @@ def _plano_campanha(objetivo, n_emails, tipo, cadencia, kb, brief, temperatura="
     tipo_desc = "os emails se repetem em ciclo contínuo" if tipo == "infinita" else "sequência única"
     estrategia = _estrategia_bloco(temperatura)
     call = (lambda prompt, **kw: _ai_json_with_heartbeat(cid, prompt, **kw)) if cid else _ai_json
-    return call(f"""Você é o estrategista de email marketing da 4Unik (Time 4Unik).
+    return call(f"""Você é o estrategista de email marketing da Yoobe (Time Yoobe).
 PLANEJE (NÃO escreva os emails ainda) uma campanha de {n_emails} emails. Tipo: {tipo} ({tipo_desc}). {cadencia}.
 Distribua a mensagem do início ao fim, em ordem estratégica, SEM repetir ângulos entre os emails.
 Siga o ESQUELETO DE CADÊNCIA da estratégia do segmento abaixo, adaptando-o ao nº de emails.
 Devolva SOMENTE JSON válido, sem markdown:
 {{"nome": "nome da campanha", "resumo": "1 frase",
- "insight_gtm": {{"icp":"persona e dor", "gancho":"ângulo de entrada", "prova":"case/dado ou hipótese rotulada", "cta":"CTA", "evento_ga4":"um evento permitido", "utm_source":"4unik-mail", "utm_medium":"email"}},
+ "insight_gtm": {{"icp":"persona e dor", "gancho":"ângulo de entrada", "prova":"case/dado ou hipótese rotulada", "cta":"CTA", "evento_ga4":"um evento permitido", "utm_source":"yoobe-mail", "utm_medium":"email"}},
  "emails": [{{"nome": "título curto do email", "angulo": "o foco/conteúdo deste email em 1-2 frases", "offset_dias": 0}}]}}
 
-CONTEXTO (KBs da 4Unik):
+CONTEXTO (KBs da Yoobe):
 {kb}
 
 PERFIL DO PÚBLICO (cohort):
@@ -845,7 +845,7 @@ OBJETIVO DA CAMPANHA: {objetivo}""", timeout=180)
 def _gerar_email(objetivo, e, todos_angulos, ordem, n, kb, imgs, brief, estrategia, cid=None):
     """2ª..N+1ª chamadas (uma por email): escreve UM email completo. Cada uma pequena/rápida."""
     call = (lambda prompt, **kw: _ai_json_with_heartbeat(cid, prompt, **kw)) if cid else _ai_json
-    return call(f"""Você é o copywriter da 4Unik (Time 4Unik). Escreva O EMAIL {ordem} DE {n} de uma campanha.
+    return call(f"""Você é o copywriter da Yoobe (Time Yoobe). Escreva O EMAIL {ordem} DE {n} de uma campanha.
 Aplique o craft do skill email-creative-builder (KB 0-skill-email-*) para assuntos ousados e corpo escaneável.
 Devolva SOMENTE JSON válido, sem markdown:
 {{"assunto": "assunto principal ousado e específico",
@@ -862,7 +862,7 @@ Todas devem funcionar para o mesmo corpo de email.
 
 {GUIA_HTML}
 
-CONTEXTO (KBs da 4Unik):
+CONTEXTO (KBs da Yoobe):
 {kb}
 
 IMAGENS DISPONÍVEIS: {', '.join(imgs) or 'nenhuma'}
@@ -911,7 +911,7 @@ Se o texto abaixo já aplica as diretrizes, preserve essas mudanças mesmo que o
 mais ousado ou diferente do funil genérico. Só refine gancho/CTA/clareza SEM reverter
 o que o dono pediu.
 """
-        rev = call(f"""Você é o editor-chefe de email marketing da 4Unik (Time 4Unik).
+        rev = call(f"""Você é o editor-chefe de email marketing da Yoobe (Time Yoobe).
 Revise o email abaixo como um editor exigente, com a barra do skill email-creative-builder.
 Avalie:
 1. GANCHO: assunto + 3 assuntos_alternativos ousados e distintos? Preheader complementa?
@@ -1346,7 +1346,7 @@ def _plano_reescrever(cid, diretrizes, analise, objetivo, contexto, steps, brief
     )
     agent_usage.set_run_context(campaign_id=int(cid), agent="estrategista",
                                 task_type="rewrite_plan")
-    return _ai_json(f"""Você é o estrategista de e-mail da 4Unik (Time 4Unik).
+    return _ai_json(f"""Você é o estrategista de e-mail da Yoobe (Time Yoobe).
 O dono da campanha pediu uma REESCRITA com novas diretrizes. Atualize o Resumo (objetivo)
 e o Planejamento (contexto) para refletir essas diretrizes + a análise, e diga o que mudar
 em cada e-mail. Devolva SOMENTE JSON válido, sem markdown:
@@ -1378,7 +1378,7 @@ PERFIL DO PÚBLICO (cohort):
 
 {GUIA_GTM_CAMPANHAS}
 
-CONTEXTO (KBs da 4Unik — use só o relevante):
+CONTEXTO (KBs da Yoobe — use só o relevante):
 {kb[:6000]}
 
 Regras:
@@ -1406,7 +1406,7 @@ def _reescrever_email(objetivo, atual, diretrizes, analise, ordem, n, kb, imgs, 
             f"\nFEEDBACK DO CRÍTICO (corrija estes pontos nesta iteração):\n"
             f"{feedback.strip()}\n"
         )
-    return _ai_json(f"""Você é o copywriter da 4Unik (Time 4Unik). REESCREVA o e-mail {ordem} de {n}
+    return _ai_json(f"""Você é o copywriter da Yoobe (Time Yoobe). REESCREVA o e-mail {ordem} de {n}
 de uma campanha existente. As NOVAS DIRETRIZES abaixo têm PRIORIDADE MÁXIMA — elas vieram do dono da
 campanha após analisar a versão atual. Mantenha o que funciona; mude o que as diretrizes pedirem.
 Devolva SOMENTE JSON válido, sem markdown:
@@ -1424,7 +1424,7 @@ ANÁLISE DA CAMPANHA (use como insight para decidir o que mudar):
 
 {GUIA_HTML}
 
-CONTEXTO (KBs da 4Unik):
+CONTEXTO (KBs da Yoobe):
 {kb}
 
 IMAGENS DISPONÍVEIS: {', '.join(imgs) or 'nenhuma'}
@@ -1460,7 +1460,7 @@ PLANEJAMENTO / CONTEXTO ATUALIZADO:
 
 def _criticar_reescrita(antes, depois, diretrizes, analise, cid=None):
     """Grok (ou Gemini Flash) verifica se a reescrita aplicou as diretrizes do dono."""
-    prompt = f"""Você é um crítico exigente de copy de e-mail (4Unik).
+    prompt = f"""Você é um crítico exigente de copy de e-mail (Yoobe).
 Compare ANTES vs DEPOIS e diga se as DIRETRIZES DO DONO foram aplicadas de verdade.
 Devolva SOMENTE JSON válido, sem markdown:
 {{"approved": true/false,
@@ -1756,11 +1756,21 @@ def reescrever_campanha(cid, diretrizes, ordens=None):
     return {"id": cid, "emails": ordens or "todos", "run_token": token}
 
 
+def _sender_novas_campanhas(sender_id=None):
+    sender = db.sender_default()
+    if not sender:
+        raise RuntimeError("Cadastre genau@yoobe.co antes de criar campanhas.")
+    if sender_id is not None and int(sender_id) != int(sender["id"]):
+        raise ValueError("Novas campanhas só podem usar genau@yoobe.co.")
+    return int(sender["id"])
+
+
 def criar_campanha(objetivo, tipo="finita", cad_min=None, cad_max=None,
-                   n_emails=3, segmentos=None, apenas_sem_resposta=True, tags=None, sender_id=1,
+                   n_emails=3, segmentos=None, apenas_sem_resposta=True, tags=None, sender_id=None,
                    inicio_em="", audience_profile=""):
     """Cria a campanha NA HORA (rascunho) e gera os emails um a um em BACKGROUND (sem timeout).
     Acompanhe o progresso por build_progress(cid) / GET /api/campaigns/{cid} (campo 'build')."""
+    sender_id = _sender_novas_campanhas(sender_id)
     sync_skill_kbs()
     kb, imgs = contexto()
     n_emails = max(1, min(int(n_emails or 3), 20))
@@ -1775,7 +1785,7 @@ def criar_campanha(objetivo, tipo="finita", cad_min=None, cad_max=None,
     c.execute("""INSERT INTO campaigns(nome,objetivo,tipo,status,cad_min_dias,cad_max_dias,contexto,sender_id,inicio_em,audience_profile,origem_ambiente)
                  VALUES(?,?,?,'rascunho',?,?,?,?,?,?,?)""",
               (f"Gerando campanha… ({n_emails} e-mails)", objetivo, tipo, cad_min, cad_max,
-               "A IA está redigindo os e-mails…", sender_id or 1, inicio_em or "", audience_profile or "",
+               "A IA está redigindo os e-mails…", sender_id, inicio_em or "", audience_profile or "",
                db.dashboard_env()))
     cid = c.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
     for email in audiencia:
@@ -1792,8 +1802,9 @@ def criar_campanha(objetivo, tipo="finita", cad_min=None, cad_max=None,
     return cid
 
 
-def criar_campanha_contato(email, objetivo, n_emails=3, sender_id=1, inicio_em=""):
+def criar_campanha_contato(email, objetivo, n_emails=3, sender_id=None, inicio_em=""):
     """Cria campanha IA em rascunho para um único contato, sem resolver audiência ampla."""
+    sender_id = _sender_novas_campanhas(sender_id)
     c = db.conn()
     contato = c.execute("SELECT * FROM contacts WHERE email=?", (email,)).fetchone()
     c.close()
@@ -1810,7 +1821,7 @@ def criar_campanha_contato(email, objetivo, n_emails=3, sender_id=1, inicio_em="
                  contexto,sender_id,inicio_em,audience_profile,origem_ambiente)
                  VALUES(?,?,'finita','rascunho',NULL,NULL,?,?,?,?,?)""",
               (f"Gerando campanha individual — {contato['empresa'] or contato['nome'] or email}",
-               objetivo, "Campanha individual criada pela ficha do CRM", sender_id or 1,
+               objetivo, "Campanha individual criada pela ficha do CRM", sender_id,
                inicio_em or "", "contato_individual", db.dashboard_env()))
     cid = c.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
     c.execute("INSERT INTO campaign_contacts(campaign_id,email) VALUES(?,?)", (cid, email))
@@ -1831,7 +1842,7 @@ def gerar_briefing_ads(campanha, steps):
     kb, _ = contexto()
     slug = campanha.get("slug") or db.slugify(campanha.get("nome", "")) or f"c{campanha.get('id')}"
     emails = "\n".join(f"- etapa {s.get('ordem')}: {s.get('template_ref')}" for s in steps) or "—"
-    res = _ai_json(f"""Você é o gestor de tráfego da 4Unik. Crie um briefing de campanha
+    res = _ai_json(f"""Você é o gestor de tráfego da Yoobe. Crie um briefing de campanha
 Google Ads (rede de pesquisa, anúncio responsivo RSA) que espelhe a campanha de email abaixo,
 para o mesmo público e objetivo. Devolva SOMENTE JSON válido, sem markdown:
 {{"campaign_name": "{slug}",
@@ -1844,7 +1855,7 @@ para o mesmo público e objetivo. Devolva SOMENTE JSON válido, sem markdown:
    "descriptions": ["até 4 descrições, cada uma com NO MÁXIMO 90 caracteres"],
    "final_url": "URL de destino SEM parâmetros utm"}}]}}
 
-CONTEXTO (KBs da 4Unik):
+CONTEXTO (KBs da Yoobe):
 {kb}
 
 {GUIA_GTM_CAMPANHAS}
@@ -1858,12 +1869,12 @@ Emails da cadência:
 
 REGRAS: headlines ≤30 caracteres; descriptions ≤90; 8 a 15 headlines; 2 a 4 descriptions;
 keywords em português focadas em recompensas corporativas/gamificação/loja de resgate;
-final_url deve ser uma página real da 4unik (plataforma.4unik.com.br/landing/... ou 4unik.com.br).""")
+final_url deve ser uma página real da Yoobe em corporate.yoobe.co ou catalogo.yoobe.co.""")
     from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
     for g in res.get("ad_groups", []):
         g["headlines"] = [h.strip() for h in g.get("headlines", []) if h and len(h.strip()) <= 30][:15]
         g["descriptions"] = [d.strip() for d in g.get("descriptions", []) if d and len(d.strip()) <= 90][:4]
-        url = (g.get("final_url") or "https://plataforma.4unik.com.br/landing/").strip()
+        url = (g.get("final_url") or "https://corporate.yoobe.co/").strip()
         p = urlsplit(url)
         q = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True) if not k.startswith("utm_")]
         q += [("utm_source", "google"), ("utm_medium", "cpc"), ("utm_campaign", slug)]
@@ -1936,9 +1947,9 @@ def gerar_briefing_lancamento(cid):
                   agente_rotulo=AGENTE_ROTULOS["estrategista_gtm"],
                   etapa="escrevendo o briefing de lançamento…",
                   heartbeat_em=db.now())
-    res = _ai_json_with_heartbeat(cid, f"""Você é o estrategista GTM e editor-chefe da 4Unik (Time 4Unik).
+    res = _ai_json_with_heartbeat(cid, f"""Você é o estrategista GTM e editor-chefe da Yoobe (Time Yoobe).
 Escreva o BRIEFING DE LANÇAMENTO desta campanha de email já gerada: os PORQUÊS que permitem
-à 4Unik decidir se ativa ou não. Seja honesto: aponte riscos e fraquezas reais; a recomendação
+à Yoobe decidir se ativa ou não. Seja honesto: aponte riscos e fraquezas reais; a recomendação
 "nao_lancar" ou "ajustar" é tão válida quanto "lancar". Toda prova citada deve indicar de QUAL
 KB veio; se não estiver nos KBs, rotule como hipótese.
 FORMATAÇÃO: use frases curtas e separe parágrafos com \\n\\n nos campos de prosa (resumo,
@@ -1961,7 +1972,7 @@ Devolva SOMENTE JSON válido, sem markdown:
 
 {GUIA_GTM_CAMPANHAS}
 
-CONTEXTO (KBs da 4Unik):
+CONTEXTO (KBs da Yoobe):
 {kb}
 
 CAMPANHA:
@@ -2315,7 +2326,7 @@ _FORMATO_PORTFOLIO = """{"campanhas": [{
 def _portfolio_estrategista(kb, brief, max_campanhas, feedback=""):
     extra = (f"\nFEEDBACK DO COPYWRITER NA RODADA ANTERIOR (corrija tudo que foi apontado):\n{feedback}"
              if feedback else "")
-    return _ai_json(f"""Você é o estrategista GTM da 4Unik (Time 4Unik), operando o skill
+    return _ai_json(f"""Você é o estrategista GTM da Yoobe (Time Yoobe), operando o skill
 "GTM Engineer & Growth Specialist" (os KBs com prefixo 0-skill são os mds originais do skill:
 trate-os como fonte de verdade de posicionamento, provas, planos e ICPs).
 PROPONHA um portfólio de até {max_campanhas} campanhas de email DISTINTAS entre si — cada uma
@@ -2328,7 +2339,7 @@ Regras do plano: n_emails entre 3 e 5; tipo "finita" com cad_min/cad_max null (c
 ou "infinita" com cad_min/cad_max em dias; utm_campaign em kebab-case; não proponha campanha
 para cohort com 0 contatos.
 
-CONTEXTO (skills + KBs da 4Unik):
+CONTEXTO (skills + KBs da Yoobe):
 {kb}
 
 PERFIL DOS COHORTS DO CRM:
@@ -2345,7 +2356,7 @@ def _portfolio_critica(portfolio, kb, brief):
     Devolve o portfólio refinado com 'aprovado' por campanha + 'aprovado_geral'.
     Falha nunca quebra o loop: devolve None e o chamador mantém a proposta original.
     """
-    prompt = f"""Você é o crítico editorial da 4Unik (Time 4Unik), usando julgamento exigente.
+    prompt = f"""Você é o crítico editorial da Yoobe (Time Yoobe), usando julgamento exigente.
 Critique o portfólio de campanhas abaixo como um editor exigente:
 1. ÂNGULOS: há campanhas repetindo gancho/ICP? Cada uma tem dor operacional concreta?
 2. EVIDÊNCIA: toda prova está nos KBs ou rotulada como hipótese? Nada inventado?
@@ -2357,7 +2368,7 @@ irrecuperáveis. Devolva SOMENTE JSON válido, sem markdown, no MESMO formato do
 acrescentando os campos "aprovado" e "critica" por campanha e, no topo,
 "aprovado_geral": true/false (true = o portfólio inteiro está pronto para gerar).
 
-CONTEXTO (skills + KBs da 4Unik):
+CONTEXTO (skills + KBs da Yoobe):
 {kb}
 
 PERFIL DOS COHORTS DO CRM:
@@ -2429,10 +2440,11 @@ def sugerir_campanhas(max_campanhas=5):
     return suggest_status()
 
 
-def gerar_portfolio(sender_id=1):
+def gerar_portfolio(sender_id=None):
     """Gera cada sugestão aprovada como campanha RASCUNHO via criar_campanha(),
     SEQUENCIALMENTE (espera o build de uma terminar antes da próxima, para não
     disparar N gerações do claude em paralelo). Idempotente: pula as já criadas."""
+    sender_id = _sender_novas_campanhas(sender_id)
     p = suggest_status() or {}
     aprovadas = [s for s in p.get("campanhas", []) if s.get("aprovado", True)]
     if not aprovadas:
@@ -2483,8 +2495,9 @@ def _portfolio_worker(max_campanhas, auto_gerar, sender_id):
         print(f"[sugestão de campanhas] ERRO: {ex}", flush=True)
 
 
-def iniciar_sugestao(max_campanhas=5, auto_gerar=False, sender_id=1):
+def iniciar_sugestao(max_campanhas=5, auto_gerar=False, sender_id=None):
     """Dispara o loop de sugestão (e opcionalmente a geração) em background."""
+    sender_id = _sender_novas_campanhas(sender_id)
     p = suggest_status() or {}
     if p.get("status") in ("gerando", "gerando_rascunhos"):
         return {"status": p["status"], "nota": "já existe um loop de sugestão em andamento",
@@ -2496,8 +2509,9 @@ def iniciar_sugestao(max_campanhas=5, auto_gerar=False, sender_id=1):
             "nota": "Sugestão de campanhas iniciada. Acompanhe em GET /api/campaigns/suggest."}
 
 
-def iniciar_geracao_portfolio(sender_id=1):
+def iniciar_geracao_portfolio(sender_id=None):
     """Dispara a geração dos rascunhos do portfólio já sugerido, em background."""
+    sender_id = _sender_novas_campanhas(sender_id)
     p = suggest_status() or {}
     if p.get("status") in ("gerando", "gerando_rascunhos"):
         return {"status": p["status"], "nota": "geração já em andamento", "etapa": p.get("etapa", "")}

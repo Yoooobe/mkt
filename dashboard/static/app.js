@@ -1,4 +1,4 @@
-/* 4unik.mail — SPA vanilla (hash router) */
+/* Yoobe.mail — SPA vanilla (hash router) */
 const view = document.getElementById("view");
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
@@ -1066,9 +1066,10 @@ async function dlgCampanha(templateRef) {
   try {
     const sd = await api("/api/senders");
     const sel = document.getElementById("nc-sender");
-    sel.innerHTML = sd.senders.map(s =>
+    const disponiveis = sd.senders.filter(s => s.para_campanha_nova);
+    sel.innerHTML = disponiveis.map(s =>
       `<option value="${s.id}" ${s.conectado ? "" : "disabled"}>${esc(s.email)} — ${esc(s.proposito)}${s.conectado ? "" : "  (🔴 precisa login)"}</option>`).join("");
-    const first = sd.senders.find(s => s.conectado);
+    const first = disponiveis[0];
     if (first) sel.value = first.id;
     const hint = document.getElementById("nc-sender-hint");
     const upd = () => { const s = sd.senders.find(x => x.id == sel.value);
@@ -2594,15 +2595,9 @@ async function editarCampanha(id) {
   };
   const sd = await api("/api/senders");
   const sender = document.getElementById("ec-sender");
-  const opts = document.createDocumentFragment();
-  (sd.senders || []).forEach(s => {
-    const o = document.createElement("option");
-    o.value = String(s.id);
-    o.textContent = `${s.email} — ${s.proposito || ""}${s.conectado ? "" : " (precisa login)"}`;
-    if (s.id === c.sender_id) o.selected = true;
-    opts.appendChild(o);
-  });
-  sender.replaceChildren(opts);
+  const currentSender = (sd.senders || []).find(s => s.id === c.sender_id);
+  sender.replaceChildren(new Option(currentSender?.email || "Remetente histórico", String(c.sender_id)));
+  sender.disabled = true;
   const btn = document.getElementById("ec-salvar");
   btn.disabled = false;
   btn.onclick = async () => {
@@ -2818,7 +2813,7 @@ async function campAtivar(id, n, confirmacao) {
     }
     if (e.data && e.data.requer_confirmacao) {
       const d = e.data;
-      const aviso = `ATENÇÃO: esta campanha inclui ${d.clientes} CLIENTE(S) 4Unik\n` +
+      const aviso = `ATENÇÃO: esta campanha inclui ${d.clientes} CLIENTE(S) Yoobe\n` +
         `(${d.ativos} ativos · ${d.inativos} inativos · ${d.possiveis} possíveis).\n\n` +
         `Para enviar para clientes assim mesmo, digite QUERO_ENVIAR abaixo (ou cancele).`;
       const t = prompt(aviso, "");
@@ -2853,7 +2848,7 @@ async function campDispararAgora(id, n, confirmacao) {
     }
     if (e.data && e.data.requer_confirmacao) {
       const d = e.data;
-      const aviso = `ATENÇÃO: esta campanha inclui ${d.clientes} CLIENTE(S) 4Unik\n` +
+      const aviso = `ATENÇÃO: esta campanha inclui ${d.clientes} CLIENTE(S) Yoobe\n` +
         `(${d.ativos} ativos · ${d.inativos} inativos · ${d.possiveis} possíveis).\n\n` +
         `Para disparar para clientes assim mesmo, digite QUERO_ENVIAR abaixo (ou cancele).`;
       const t = prompt(aviso, "");
@@ -3263,8 +3258,7 @@ async function vRemetentes() {
   const maxEnv = Math.max(1, ...ss.map(s => s.stats.enviados));
   view.innerHTML = `
     <h2>Remetentes</h2>
-    <p class="muted" style="margin-top:0">Cada remetente é uma conta de e-mail própria (perfil gws isolado).
-    Escolha o remetente certo na criação de campanha — você sempre sabe quem está enviando o quê.</p>
+    <p class="muted" style="margin-top:0">Campanhas novas saem somente por <b>genau@yoobe.co</b>. As contas antigas ficam disponíveis para consultar o histórico e sincronizar respostas.</p>
 
     <div class="card">
       <h3>📊 Performance global (todos os remetentes)</h3>
@@ -3282,29 +3276,9 @@ async function vRemetentes() {
 
     <div class="toolbar" style="margin-top:6px">
       <h3 style="margin:0">Gerenciar contas</h3>
-      <button class="primary" id="novo-remetente-btn">＋ Novo remetente</button>
-    </div>
-    <div class="card" id="novo-remetente-form" style="display:none;margin-top:12px">
-      <h3 style="margin-top:0">Cadastrar remetente</h3>
-      <p class="muted">O cadastro não envia e-mail. A conta começa desconectada; depois, use <b>Conectar conta</b> para autorizar o Gmail nesse perfil isolado.</p>
-      <form id="sender-create-form">
-        <div class="row" style="gap:12px;align-items:end">
-          <div class="field grow"><label for="sender-email">E-mail *</label><input id="sender-email" type="email" required placeholder="voce@empresa.com"></div>
-          <div class="field grow"><label for="sender-nome">Nome</label><input id="sender-nome" placeholder="Ex.: Genau Junior"></div>
-          <div class="field grow"><label for="sender-proposito">Propósito</label><input id="sender-proposito" placeholder="Ex.: Operação e administração"></div>
-        </div>
-        <div class="row" style="gap:8px"><button class="primary" type="submit" id="sender-create-submit">Cadastrar remetente</button><button type="button" id="cancelar-remetente">Cancelar</button></div>
-        <p class="form-feedback" id="sender-create-feedback" role="status" aria-live="polite"></p>
-      </form>
     </div>
     ${ss.map(s => senderCard(s, d.classes_seguras)).join("")}`;
   wireSenders(d.classes_seguras);
-  document.getElementById("novo-remetente-btn").onclick = () => {
-    const form = document.getElementById("novo-remetente-form");
-    form.style.display = "block"; document.getElementById("sender-email").focus();
-  };
-  document.getElementById("cancelar-remetente").onclick = () => document.getElementById("novo-remetente-form").style.display = "none";
-  document.getElementById("sender-create-form").onsubmit = senderCriar;
 }
 
 function senderCard(s, classesSeguras) {
@@ -3577,7 +3551,7 @@ async function vCRM() {
   document.getElementById("crm-export").onclick = async () => {
     const res = await fetch("/api/contacts/export.csv?" + params(1), {headers: {"X-API-Key": window.API_KEY}});
     if (!res.ok) return toast("Não foi possível exportar os leads.");
-    const blob = await res.blob(), a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "leads-4unik.csv"; a.click(); URL.revokeObjectURL(a.href); toast("CSV exportado ✔");
+    const blob = await res.blob(), a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "leads-yoobe.csv"; a.click(); URL.revokeObjectURL(a.href); toast("CSV exportado ✔");
   };
   document.getElementById("crm-up").onchange = async e => {
     const fd = new FormData(); fd.append("file", e.target.files[0]);
@@ -3808,7 +3782,7 @@ async function contactLaunchNow(email, confirmacao = "") {
     await vContato(email);
   } catch (e) {
     if (e.data?.requer_confirmacao) {
-      const t = prompt(`Esta campanha inclui ${e.data.clientes} cliente(s) 4Unik. Para disparar, digite QUERO_ENVIAR.`, "");
+      const t = prompt(`Esta campanha inclui ${e.data.clientes} cliente(s) Yoobe. Para disparar, digite QUERO_ENVIAR.`, "");
       if (t?.trim() === "QUERO_ENVIAR") return contactLaunchNow(email, "QUERO_ENVIAR");
       return toast("Disparo cancelado — clientes protegidos.", 5000);
     }
@@ -4013,17 +3987,17 @@ async function vMidia() {
     <p class="muted">Consolida dados de Analytics, Tag Manager e Ads para acompanhar campanhas. A integração é <b>somente leitura</b>: não publica tags, nem cria ou altera anúncios.</p>
     <div class="media-health">${pill(s.ga4_pronto, "GA4")} ${pill(s.gtm_pronto, "Tag Manager")} ${pill(s.ads_pronto, "Google Ads")}</div>
     <div class="card" id="gm-result"><div class="media-connected">
-      <div><b>GA4 conectado</b><br><small class="muted">Conta ${esc(s.ga4?.account_id || "—")} · Property ${esc(s.ga4?.property_id || "—")} · Landing ${esc(s.ga4?.measurement_id || "a selecionar")} · Site ${esc(s.ga4?.site_measurement_id || "não informado")}</small></div>
+      <div><b>GA4 conectado</b><br><small class="muted">Conta ${esc(s.ga4?.account_id || "—")} · Property ${esc(s.ga4?.property_id || "—")} · corporate.yoobe.co ${esc(s.ga4?.measurement_id || "a selecionar")} · catalogo.yoobe.co ${esc(s.ga4?.site_measurement_id || "não informado")}</small></div>
       <div><button id="gm-goals">🎯 Configurar eventos-chave de aquisição</button> <button class="primary" id="gm-sync-top">↻ Atualizar agora</button></div></div>
-      <p class="muted">Eventos-chave oficiais: <code>generate_lead</code>, <code>schedule_demo</code>, <code>contact_whatsapp</code> (+55 11 2684-4724) e <code>contact_email</code> (comercial@4unik.com.br).</p>
+      <p class="muted">Eventos-chave oficiais: <code>generate_lead</code>, <code>schedule_demo</code>, <code>contact_whatsapp</code> (+55 41 98760-7512) e <code>contact_email</code> (corporate@yoobe.co).</p>
       <div id="gm-metrics"><span class="muted">Carregando métricas salvas…</span></div></div>
     <div class="row">
       <div class="card grow"><h3>Configuração</h3>
         <p class="muted">Credenciais já gravadas não são exibidas. Deixe um campo vazio para mantê-la.</p>
         <div class="field"><label>GA4 Account ID</label><input id="gm-ga4-account" value="${esc(s.ga4?.account_id || "")}" placeholder="ex.: 66932658" style="width:100%"></div>
         <div class="field"><label>GA4 Property ID</label><input id="gm-ga4" value="${esc(s.ga4?.property_id || "")}" placeholder="ex.: 327916606" style="width:100%"></div>
-        <div class="field"><label>GA4 Measurement ID</label><input id="gm-measurement" value="${esc(s.ga4?.measurement_id || "")}" placeholder="ex.: G-XXXXXXXXXX" style="width:100%"><small class="muted">Stream da Plataforma Landing. O dashboard não injeta tags no site; configure a tag no GTM.</small></div>
-        <div class="field"><label>GA4 Measurement ID — site 4unik.com.br</label><input id="gm-site-measurement" value="${esc(s.ga4?.site_measurement_id || "")}" placeholder="ex.: G-XXXXXXXXXX" style="width:100%"></div>
+        <div class="field"><label>GA4 Measurement ID — corporate.yoobe.co</label><input id="gm-measurement" value="${esc(s.ga4?.measurement_id || "")}" placeholder="ex.: G-XXXXXXXXXX" style="width:100%"><small class="muted">Stream da plataforma; configure a tag no GTM.</small></div>
+        <div class="field"><label>GA4 Measurement ID — catalogo.yoobe.co</label><input id="gm-site-measurement" value="${esc(s.ga4?.site_measurement_id || "")}" placeholder="ex.: G-XXXXXXXXXX" style="width:100%"></div>
         <div class="field"><label>Google tag ID</label><input id="gm-google-tag" value="${esc(s.tags?.google_tag_id || "")}" placeholder="ex.: GT-XXXXXXX" style="width:100%"><small class="muted">Identificação de tag do site; não substitui o Container ID do GTM.</small></div>
         <div class="field"><label>Google Ads tag ID</label><input id="gm-ads-tag" value="${esc(s.tags?.ads_tag_id || "")}" placeholder="ex.: AW-XXXXXXXXX" style="width:100%"><small class="muted">Tag de conversão; não substitui Customer ID nem Developer Token do Ads.</small></div>
         <div class="field"><label>GTM Account ID</label><input id="gm-gtm-account" placeholder="ex.: 12345678" style="width:100%"></div>
@@ -4035,7 +4009,7 @@ async function vMidia() {
       </div>
       <div class="card grow"><h3>UTM para campanhas</h3>
         <p class="muted">Use esta URL nos anúncios; GA4 atribui sessões e conversões à campanha.</p>
-        <div class="field"><label>URL de destino</label><input id="gm-url" placeholder="https://plataforma.4unik.com.br/..." style="width:100%"></div>
+        <div class="field"><label>URL de destino</label><input id="gm-url" placeholder="https://corporate.yoobe.co/..." style="width:100%"></div>
         <div class="row"><div class="field grow"><label>Campanha</label><input id="gm-campaign" placeholder="ex.: demo-julho-2026" style="width:100%"></div>
           <div class="field"><label>Origem</label><input id="gm-source" value="google" style="width:110px"></div>
           <div class="field"><label>Mídia</label><input id="gm-medium" value="cpc" style="width:90px"></div></div>
@@ -4135,8 +4109,8 @@ async function vSite(site = "plataforma", days = 28) {
   const sel = (v, cur) => v === cur ? "primary" : "";
   const controles = `
     <div class="toolbar"><h2 style="margin:0">Site & Ads</h2><span class="sp"></span>
-      <button class="${sel("plataforma", site)}" onclick="vSite('plataforma',${days})">plataforma.4unik.com.br</button>
-      <button class="${sel("site", site)}" onclick="vSite('site',${days})">4unik.com.br</button>
+      <button class="${sel("plataforma", site)}" onclick="vSite('plataforma',${days})">corporate.yoobe.co</button>
+      <button class="${sel("site", site)}" onclick="vSite('site',${days})">catalogo.yoobe.co</button>
       <button class="${sel("todos", site)}" onclick="vSite('todos',${days})">Todos os domínios</button>
       &nbsp;·&nbsp;
       <button class="${sel(7, days)}" onclick="vSite('${site}',7)">7d</button>
@@ -4185,7 +4159,7 @@ async function vSite(site = "plataforma", days = 28) {
     </div>
     <div class="card"><h3>🧲 Leads identificados (formulário do site)</h3>
       <p class="muted">Cada envio do formulário vira um documento <code>leadSubmission</code> no Sanity
-      (Studio → Leads e audiência) e um email para <b>comercial@4unik.com.br</b>. A coluna Origem é o
+      (Studio → Leads e audiência) e um email para <b>corporate@yoobe.co</b>. A coluna Origem é o
       <code>source</code> do formulário (qual bloco/página gerou o lead). Aqui você importa direto para o CRM.</p>
       ${ld.erro ? `<p class="form-feedback error">${esc(ld.erro)}</p>` : ""}
       <div class="table-scroll"><table><tr><th>Quando</th><th>Nome</th><th>Email</th><th>Empresa</th><th>Telefone</th><th>Origem</th><th>Mensagem</th><th></th></tr>
@@ -4204,7 +4178,7 @@ async function vSite(site = "plataforma", days = 28) {
       ${funil.map(x => `<tr><td><a href="#/campanha/${x.id}">${esc(x.nome)}</a><br><small class="muted">utm: ${esc(x.slug)}</small></td>
         <td>${badge(x.status)}</td><td>${x.enviados}</td><td>${x.abertos}</td><td>${x.cliques}</td><td>${x.sessoes}</td><td>${x.key_events}</td></tr>`).join("") || '<tr><td colspan="7" class="muted">nenhuma campanha ativa/encerrada ainda</td></tr>'}</table>
       </div>
-      ${(cf.ga4_sem_campanha_local || []).length ? `<p class="muted">Também no GA4 com utm_source=4unik-mail, sem campanha local correspondente: ${cf.ga4_sem_campanha_local.map(x => esc(x.utm_campaign)).join(", ")}</p>` : ""}
+      ${(cf.ga4_sem_campanha_local || []).length ? `<p class="muted">Também no GA4 com utm_source=yoobe-mail, sem campanha local correspondente: ${cf.ga4_sem_campanha_local.map(x => esc(x.utm_campaign)).join(", ")}</p>` : ""}
     </div>`;
 }
 

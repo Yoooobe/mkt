@@ -2,7 +2,7 @@
 
 Fonte: planilha "Direct Mail and Gifting Automation Software Platforms.xlsx" (base_leads, compilada de NotebookLM + fontes públicas, jul/2026). Usar como base factual para battlecards, comparativos e posicionamento. Não inventar números além dos listados; quando a célula original dizia "Not in source", o dado é desconhecido.
 
-## 4unik (by Yoobe) — o produto
+## Yoobe (by Yoobe) — o produto
 
 - **Sede**: Brasil (São Paulo / LATAM). Yoobe é de Curitiba, PR.
 - **ICPs**: RH (onboarding, reconhecimento), Vendas (incentivos), E-learning, produtores de eventos, criadores de conteúdo e SaaS B2B.
@@ -29,11 +29,11 @@ Fonte: planilha "Direct Mail and Gifting Automation Software Platforms.xlsx" (ba
 
 ## Concorrentes locais (Brasil) — logística sem software de engajamento
 
-Lobby, Beuni e Drika: armazenagem, embalagem e despacho de caixas/swag. Foco puramente logístico, sem gamificação, triggers comportamentais ou software de engajamento nativo. Posicionar a 4unik como camada de regras + gamificação + checkout + fulfillment via API por cima do que eles só executam fisicamente.
+Lobby, Beuni e Drika: armazenagem, embalagem e despacho de caixas/swag. Foco puramente logístico, sem gamificação, triggers comportamentais ou software de engajamento nativo. Posicionar a Yoobe como camada de regras + gamificação + checkout + fulfillment via API por cima do que eles só executam fisicamente.
 
 ## Gamificação digital-only — sem execução física
 
-- **StriveCloud** (Bélgica) e **Open Loyalty** (Polônia): pontos, leaderboards e missões apenas em software; sem fulfillment físico nem camada de e-commerce. Posicionar a 4unik como quem executa o resgate físico de ponta a ponta.
+- **StriveCloud** (Bélgica) e **Open Loyalty** (Polônia): pontos, leaderboards e missões apenas em software; sem fulfillment físico nem camada de e-commerce. Posicionar a Yoobe como quem executa o resgate físico de ponta a ponta.
 
 ## Automação genérica
 
@@ -55,8 +55,8 @@ Postalytics (integração CRM + tracking de entrega, HubSpot/Zapier), GrowMail e
 
 ## Como usar em copy e battlecards
 
-- Contra players globais (Reachdesk/Sendoso/Alyce): a 4unik é nativa em LATAM/Brasil, com integrações a ERPs locais (Totvs, Omie, Bling, Tiny, RD Station) e fulfillment nacional com SLA — fator que os globais não cobrem bem.
-- Contra logísticos locais (Lobby/Beuni/Drika): eles armazenam e despacham; a 4unik programa o comportamento que gera o envio.
-- Contra digital-only (StriveCloud/Open Loyalty): software sem braço físico; a 4unik executa o resgate.
+- Contra players globais (Reachdesk/Sendoso/Alyce): a Yoobe é nativa em LATAM/Brasil, com integrações a ERPs locais (Totvs, Omie, Bling, Tiny, RD Station) e fulfillment nacional com SLA — fator que os globais não cobrem bem.
+- Contra logísticos locais (Lobby/Beuni/Drika): eles armazenam e despacham; a Yoobe programa o comportamento que gera o envio.
+- Contra digital-only (StriveCloud/Open Loyalty): software sem braço físico; a Yoobe executa o resgate.
 - Contra "montar em casa" (n8n + APIs avulsas): tempo e custo de desenvolvimento — 77% de economia e go-live em até 15 dias (ver platform-and-growth.md).
 - Seguir as regras da skill: sem ataques, sem números não documentados, transformar comparativo em critérios objetivos de compra.

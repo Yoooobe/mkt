@@ -1,8 +1,8 @@
-# 4Unik by Yoobe — plataforma e growth
+# Yoobe — plataforma e growth
 
 ## Fonte e status
 
-Base inicial fornecida pela 4Unik em 2026-07-15. Links do NotebookLM para complementar/validar quando houver exportação legível:
+Base inicial fornecida pela Yoobe em 2026-07-15. Links do NotebookLM para complementar/validar quando houver exportação legível:
 
 - Notebook: `1251466e-39f5-4a02-966b-3631d0082d11`
 - Artefatos: `f78e2d45-9dc5-478c-8e69-474bc1f6922e` e `038f9626-ba20-4eb5-8055-b025504dff6d`
@@ -11,7 +11,7 @@ Os artefatos compartilhados retornaram conteúdo vazio/protegido nesta sessão. 
 
 ## Posicionamento aprovado
 
-4Unik é uma **Infraestrutura de Engajamento Programável**, API-first. Vende comportamento programável por recompensas físicas: combina motor de gamificação, catálogo/checkout, regras de campanha, APIs e fulfillment automatizado.
+Yoobe é uma **Infraestrutura de Engajamento Programável**, API-first. Vende comportamento programável por recompensas físicas: combina motor de gamificação, catálogo/checkout, regras de campanha, APIs e fulfillment automatizado.
 
 Linguagem preferida: rewards, behavioral triggers, engagement infrastructure, physical execution layer, fulfillment automatizado, checkout transparente, SaaS infrastructure, Engagement Autopilot.
 
@@ -45,8 +45,8 @@ Não usar em copy comercial: brindes, kits, produtos promocionais.
 
 ## Comparativo competitivo
 
-- Lobby, Drika e Beuni: posicionar como foco em logística/armazenagem; a 4Unik adiciona regras, gamificação, checkout e fulfillment via API.
-- StriveCloud e Open Loyalty: posicionar como software sem camada física/logística; a 4Unik executa o resgate.
+- Lobby, Drika e Beuni: posicionar como foco em logística/armazenagem; a Yoobe adiciona regras, gamificação, checkout e fulfillment via API.
+- StriveCloud e Open Loyalty: posicionar como software sem camada física/logística; a Yoobe executa o resgate.
 - Shopify/VTEX: comparar apenas quando o contexto for e-commerce + loyalty; referência fornecida: 50–70% menos custo em feature parity.
 - Players globais de gifting/ABM (Reachdesk, Sendoso, Alyce, Postal.io, Snappy) e demais categorias: ver mapa completo em [competitive-landscape.md](competitive-landscape.md).
 

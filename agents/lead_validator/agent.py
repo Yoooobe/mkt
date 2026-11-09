@@ -1,4 +1,4 @@
-"""Agente ADK: validação de frescor/enriquecimento de leads B2B da 4Unik.
+"""Agente ADK: validação de frescor/enriquecimento de leads B2B da Yoobe.
 
 Consome CRM + trechos Firecrawl; devolve status e sugestões em JSON.
 A escrita no CRM e as tags de supressão ficam no dashboard.
@@ -10,7 +10,7 @@ GUARDRAIL = (
     "foi suprimido ou que e-mails foram enviados — isso é decisão do código."
 )
 
-INSTRUCTION = f"""Você é um validador de QUALIDADE DE LEADS B2B da 4Unik (Brasil).
+INSTRUCTION = f"""Você é um validador de QUALIDADE DE LEADS B2B da Yoobe (Brasil).
 Com base nos DADOS DO CRM e na EVIDÊNCIA PÚBLICA (Firecrawl), avalie se o contato
 ainda é útil para e-mail comercial. Não invente fatos fora da evidência.
 

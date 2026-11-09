@@ -1,4 +1,4 @@
-# Agentes ADK do 4unik.mail (Vertex AI Agent Engine)
+# Agentes ADK do Yoobe.mail (Vertex AI Agent Engine)
 
 Agentes prontos para deploy no **Vertex AI Agent Engine** do projeto `mkt-4unik`
 (console: Agent Platform → Overview). O dashboard usa `dashboard/agent_engine.py`
@@ -40,7 +40,7 @@ cd agents
 export GOOGLE_GENAI_USE_VERTEXAI=TRUE
 export GOOGLE_CLOUD_PROJECT=mkt-4unik
 export GOOGLE_CLOUD_LOCATION=global
-export GOOGLE_APPLICATION_CREDENTIALS=~/.config/4unik/vertex-sa.json
+export GOOGLE_APPLICATION_CREDENTIALS=~/.config/Yoobe/vertex-sa.json
 .venv/bin/adk run name_analyzer
 .venv/bin/adk run lead_validator
 .venv/bin/adk run scrape_planner

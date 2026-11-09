@@ -1,10 +1,10 @@
 # SETUP-GUIDE-GENAU.md
 
-Guia para um agente de IA instalar e operar o `4unik.mail` na maquina do Genal/Genau.
+Guia para um agente de IA instalar e operar o `Yoobe.mail` na maquina do Genal/Genau.
 
 ## 1. Visao geral
 
-Este projeto roda localmente um dashboard de email marketing para a 4Unik:
+Este projeto roda localmente um dashboard de email marketing para a Yoobe:
 
 - Backend: FastAPI em `dashboard/app.py`.
 - Banco local: SQLite em `dashboard/dashboard.db`, criado automaticamente no primeiro boot.
@@ -124,14 +124,14 @@ open http://localhost:8377
 O primeiro boot cria:
 
 - `dashboard/dashboard.db`
-- remetentes seed da 4Unik
+- remetentes seed da Yoobe
 - campanha exemplo em rascunho
 - templates aprovados de exemplo
 
 ## 7. Primeiro uso seguro
 
 1. Abra **Remetentes** e confirme que a conta de Gmail aparece conectada.
-2. Abra **Contexto IA** e revise os KBs da 4Unik.
+2. Abra **Contexto IA** e revise os KBs da Yoobe.
 3. Importe uma base pequena de teste no CRM com coluna `email`.
 4. Marque contatos de teste com a tag `teste`.
 5. Crie/preview templates antes de aprovar.
@@ -182,12 +182,12 @@ npx wrangler deploy
 No `dashboard/.env`, use os mesmos valores:
 
 ```env
-TRACKING_BASE_URL=https://t.4unik.com.br
+TRACKING_BASE_URL=https://t.corporate.yoobe.co
 TRACKING_SECRET=<mesmo TRACKING_SECRET>
 TRACKING_SYNC_KEY=<mesmo TRACKING_SYNC_KEY>
 ```
 
-Se nao houver dominio `t.4unik.com.br`, use a URL `workers.dev` impressa no deploy.
+Se nao houver dominio `t.corporate.yoobe.co`, use a URL `workers.dev` impressa no deploy.
 
 ## 9. Z-API opcional
 

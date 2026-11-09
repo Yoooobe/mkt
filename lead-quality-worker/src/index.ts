@@ -1,5 +1,5 @@
 /**
- * 4unik.mail — lead-quality Worker (economia: ≤1–2 créditos Firecrawl / lead).
+ * Yoobe.mail — lead-quality Worker (economia: ≤1–2 créditos Firecrawl / lead).
  *
  * POST /enqueue  (X-Sync-Key) → Queue LEAD_SCRAPE
  * queue consumer → scrape homepage (ou search_one) → POST /api/leads/evidence

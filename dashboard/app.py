@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4unik.mail — servidor local (FastAPI + SQLite) em http://localhost:8377.
+"""Yoobe.mail — servidor local (FastAPI + SQLite) em http://localhost:8377.
 
 API REST documentada em /docs (autentique com o header X-API-Key do arquivo
 dashboard/.env). O ciclo da fila roda numa thread a cada 30min e também no
@@ -53,8 +53,8 @@ def _api_key():
 
 
 API_KEY = _api_key()
-app = FastAPI(title="4unik.mail", version="1.0",
-              description="Dashboard local de email marketing com IA da 4Unik")
+app = FastAPI(title="Yoobe Mail", version="1.0",
+              description="Dashboard local de campanhas e relacionamento da Yoobe")
 
 
 def _campaign_origem(camp) -> str:
@@ -84,6 +84,25 @@ def _guard_campaign_create():
              "dashboard_env": "remoto"},
             status_code=403,
         )
+    return None
+
+
+def _campaign_sender(sender_id=None):
+    sender = db.sender_default()
+    if not sender:
+        return JSONResponse({"erro": "Cadastre e conecte genau@yoobe.co antes de criar campanhas."},
+                            status_code=409)
+    if sender_id is not None and int(sender_id) != int(sender["id"]):
+        return JSONResponse({"erro": "Novas campanhas só podem usar o remetente genau@yoobe.co."},
+                            status_code=409)
+    return sender
+
+
+def _campaign_sender_guard(camp):
+    sender = db.sender_get(camp["sender_id"] or 0) if camp else None
+    if not sender or (sender.get("email") or "").strip().lower() != "genau@yoobe.co":
+        return JSONResponse({"erro": "Campanhas antigas com remetente legado não podem voltar a enviar. "
+                             "Crie uma nova campanha com genau@yoobe.co."}, status_code=409)
     return None
 
 
@@ -174,7 +193,7 @@ def notificar_leads_novos():
     if not novos:
         return
     db.meta_set("leads_notify_cursor", mais_novo)
-    email_dest = engine.ENV.get("LEADS_NOTIFY_EMAIL", "comercial@4unik.com.br")
+    email_dest = engine.ENV.get("LEADS_NOTIFY_EMAIL", "corporate@yoobe.co")
     for l in novos:
         linhas = [f"{l['nome']} — {l['empresa'] or 'sem empresa'}",
                   f"{l['email']} · {l['telefone'] or 'sem telefone'}",
@@ -182,15 +201,15 @@ def notificar_leads_novos():
         if l.get("mensagem"):
             linhas.append(f"Mensagem: {l['mensagem']}")
         corpo = "\n".join(linhas)
-        texto = f"🧲 *Novo lead do site 4unik*\n\n{corpo}\n\nResponda rápido — lead quente."
+        texto = f"🧲 *Novo lead do site Yoobe*\n\n{corpo}\n\nResponda rápido — lead quente."
         if not engine.whatsapp(texto) and engine.ENV.get("ZAPI_URL"):
             db.enqueue("whatsapp", {"texto": texto})
         try:
-            html = ("<h3>🧲 Novo lead do site 4unik</h3><p>" +
+            html = ("<h3>🧲 Novo lead do site Yoobe</h3><p>" +
                     corpo.replace("\n", "<br>") + "</p>"
                     "<p>Lead salvo no Sanity (Studio → Leads e audiência) e disponível "
-                    "na aba Site &amp; Ads do 4unik.mail para importar ao CRM.</p>")
-            engine.enviar_email({"email": email_dest, "nome": "Comercial 4Unik"},
+                    "na aba Site &amp; Ads do Yoobe Mail para importar ao CRM.</p>")
+            engine.enviar_email({"email": email_dest, "nome": "Comercial Yoobe"},
                                 f"🧲 Novo lead do site: {l['nome']} ({l['empresa'] or l['origem'] or 'site'})",
                                 html, texto)
         except Exception as e:
@@ -415,7 +434,7 @@ def startup():
 
 # ---------------- contatos / CRM ----------------
 
-TAGS_INATIVOS = ("cliente_inativo_4unik", "origem-base-inativa")
+TAGS_INATIVOS = ("cliente_inativo_4unik", "cliente_inativo_yoobe", "origem-base-inativa")
 
 
 def _segmento_contato(d):
@@ -514,7 +533,7 @@ def contacts_export(q: str = "", funil: str = "", respondeu: str = "", tag: str 
     for contato in (x for pg in paginas for x in pg):
         row = dict(contato); row["tags"] = ",".join(row.get("tags") or [])
         writer.writerow(row)
-    nome = f"leads-4unik-{datetime.now().strftime('%Y%m%d-%H%M')}.csv"
+    nome = f"leads-yoobe-{datetime.now().strftime('%Y%m%d-%H%M')}.csv"
     return StreamingResponse(iter(["\ufeff" + output.getvalue()]), media_type="text/csv; charset=utf-8",
                              headers={"Content-Disposition": f'attachment; filename="{nome}"'})
 
@@ -594,7 +613,7 @@ class DisparoImediatoBody(BaseModel):
 class CampanhaIndividualBody(BaseModel):
     objetivo: str
     n_emails: int = 3
-    sender_id: int = 1
+    sender_id: Optional[int] = None
     inicio_em: Optional[str] = None
 
 
@@ -734,6 +753,10 @@ def contact_launch_campaign_now(email: str, body: DisparoImediatoBody):
     if not contato or not camp:
         c.close()
         return JSONResponse({"erro": "contato ou campanha não encontrado"}, status_code=404)
+    sender_blocked = _campaign_sender_guard(camp)
+    if sender_blocked:
+        c.close()
+        return sender_blocked
     if camp["status"] not in {"rascunho", "pausada", "ativa"}:
         c.close()
         return JSONResponse({"erro": "a campanha está encerrada e não pode ser disparada"}, status_code=409)
@@ -773,7 +796,7 @@ def contact_launch_campaign_now(email: str, body: DisparoImediatoBody):
                   (body.campaign_id, email))
         c.commit()
         c.close()
-        return JSONResponse({"erro": "esta campanha inclui cliente(s) 4Unik e exige confirmação QUERO_ENVIAR",
+        return JSONResponse({"erro": "esta campanha inclui cliente(s) Yoobe e exige confirmação QUERO_ENVIAR",
                              "requer_confirmacao": True, "token": "QUERO_ENVIAR",
                              "clientes": prot["total"], "ativos": prot["ativos"],
                              "inativos": prot["inativos"], "possiveis": prot["possiveis"]}, status_code=409)
@@ -835,11 +858,13 @@ def contact_campaign_ai(email: str, body: CampanhaIndividualBody):
     objetivo = body.objetivo.strip()
     if not objetivo:
         return JSONResponse({"erro": "objetivo é obrigatório"}, status_code=422)
-    sender = db.sender_get(body.sender_id)
+    sender = _campaign_sender(body.sender_id)
+    if isinstance(sender, JSONResponse):
+        return sender
     if not sender or not engine.sender_auth_status(sender)["conectado"]:
         return JSONResponse({"erro": "escolha um remetente conectado"}, status_code=409)
     try:
-        cid = ai.criar_campanha_contato(email.lower(), objetivo, body.n_emails, body.sender_id,
+        cid = ai.criar_campanha_contato(email.lower(), objetivo, body.n_emails, sender["id"],
                                         _normaliza_dt(body.inicio_em))
     except ValueError as e:
         return JSONResponse({"erro": str(e)}, status_code=404)
@@ -1836,7 +1861,7 @@ def campaigns(q: str = "", status: str = "", tipo: str = "",
 class SugestaoBody(BaseModel):
     max_campanhas: int = 4
     auto_gerar: bool = False            # True: gera os rascunhos logo após sugerir
-    sender_id: int = 1
+    sender_id: Optional[int] = None
 
 
 @app.post("/api/campaigns/suggest")
@@ -1846,7 +1871,10 @@ def campaigns_suggest(b: SugestaoBody):
     blocked = _guard_campaign_create()
     if blocked:
         return blocked
-    return ai.iniciar_sugestao(b.max_campanhas, b.auto_gerar, b.sender_id)
+    sender = _campaign_sender(b.sender_id)
+    if isinstance(sender, JSONResponse):
+        return sender
+    return ai.iniciar_sugestao(b.max_campanhas, b.auto_gerar, sender["id"])
 
 
 @app.get("/api/campaigns/suggest")
@@ -1861,8 +1889,11 @@ def campaigns_suggest_generate(b: SugestaoBody):
     blocked = _guard_campaign_create()
     if blocked:
         return blocked
+    sender = _campaign_sender(b.sender_id)
+    if isinstance(sender, JSONResponse):
+        return sender
     try:
-        return ai.iniciar_geracao_portfolio(b.sender_id)
+        return ai.iniciar_geracao_portfolio(sender["id"])
     except RuntimeError as ex:
         return JSONResponse({"erro": str(ex)}, status_code=400)
 
@@ -1894,7 +1925,7 @@ class NovaCampanha(BaseModel):
     segmentos: Optional[List[str]] = None
     apenas_sem_resposta: bool = True
     tags: Optional[List[str]] = None     # restringe a quem tiver alguma destas tags
-    sender_id: int = 1                   # remetente que envia a campanha
+    sender_id: Optional[int] = None
     inicio_em: Optional[str] = None      # data/hora do 1º envio ('' = ao ativar)
     audience_profile: Optional[str] = ""
 
@@ -1923,6 +1954,12 @@ def campaign_edit(cid: int, body: EditarCampanha):
     blocked = _guard_campaign_mutation(cid)
     if blocked:
         return blocked
+    c = db.conn()
+    current = c.execute("SELECT sender_id FROM campaigns WHERE id=?", (cid,)).fetchone()
+    c.close()
+    if current and int(body.sender_id) != int(current["sender_id"] or 0):
+        return JSONResponse({"erro": "O remetente de uma campanha existente não pode ser alterado. "
+                             "Crie uma nova campanha para usar genau@yoobe.co."}, status_code=409)
     nome, objetivo = body.nome.strip(), body.objetivo.strip()
     if not nome or not objetivo:
         return JSONResponse({"erro": "nome e objetivo são obrigatórios"}, status_code=422)
@@ -2052,10 +2089,13 @@ def campaign_ai_create(nc: NovaCampanha):
     blocked = _guard_campaign_create()
     if blocked:
         return blocked
+    sender = _campaign_sender(nc.sender_id)
+    if isinstance(sender, JSONResponse):
+        return sender
     if nc.tipo == "infinita" and nc.cad_min is None:
         nc.cad_min, nc.cad_max = 7, 14
     cid = ai.criar_campanha(nc.objetivo, nc.tipo, nc.cad_min, nc.cad_max,
-                            nc.n_emails, nc.segmentos, nc.apenas_sem_resposta, nc.tags, nc.sender_id,
+                            nc.n_emails, nc.segmentos, nc.apenas_sem_resposta, nc.tags, sender["id"],
                             _normaliza_dt(nc.inicio_em), nc.audience_profile or "")
     return {"id": cid, "status": "gerando",
             "nota": "Campanha criada em rascunho. A IA está redigindo os e-mails em segundo plano — "
@@ -2065,7 +2105,7 @@ def campaign_ai_create(nc: NovaCampanha):
 class CampanhaTemplate(BaseModel):
     template_ref: str
     nome: Optional[str] = None
-    sender_id: int = 1
+    sender_id: Optional[int] = None
     tipo: str = "finita"
     cad_min: Optional[int] = None
     cad_max: Optional[int] = None
@@ -2086,6 +2126,9 @@ def campaign_from_template(b: CampanhaTemplate):
     blocked = _guard_campaign_create()
     if blocked:
         return blocked
+    sender = _campaign_sender(b.sender_id)
+    if isinstance(sender, JSONResponse):
+        return sender
     t = engine.template_get(b.template_ref)
     if not t:
         return JSONResponse({"erro": "template não encontrado"}, status_code=404)
@@ -2097,7 +2140,7 @@ def campaign_from_template(b: CampanhaTemplate):
     c.execute("""INSERT INTO campaigns(nome,objetivo,tipo,status,cad_min_dias,cad_max_dias,contexto,sender_id,inicio_em,audience_profile,origem_ambiente)
                  VALUES(?,?,?,'rascunho',?,?,?,?,?,?,?)""",
               (nome, f"Campanha a partir do template '{t.get('nome') or t.get('assunto')}'", b.tipo,
-               cad_min, cad_max, "Criada a partir de template existente", b.sender_id or 1,
+               cad_min, cad_max, "Criada a partir de template existente", sender["id"],
                _normaliza_dt(b.inicio_em), b.audience_profile or "", db.dashboard_env()))
     cid = c.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
     # Clone exclusivo — nunca compartilha o ref da biblioteca/base.
@@ -2165,13 +2208,16 @@ def campaign_test_send(cid: int, body: TesteCampanhaBody):
     c.close()
     if not camp or not step:
         return JSONResponse({"erro": "campanha ou etapa não encontrada"}, status_code=404)
+    sender_blocked = _campaign_sender_guard(camp)
+    if sender_blocked:
+        return sender_blocked
     sender = db.sender_get(camp["sender_id"] or 1) or db.sender_default()
     st = engine.sender_auth_status(sender) if sender else {"conectado": False, "motivo": "sem remetente"}
     if not st["conectado"]:
         return JSONResponse({"erro": f"remetente {sender['email'] if sender else '?'} não conectado "
                              f"({st['motivo']}) — conecte na aba Remetentes"}, status_code=409)
     tpl = engine.template_get(step["template_ref"])
-    contato = {"email": email, "nome": "Genau", "empresa": "4Unik", "telefone": "",
+    contato = {"email": email, "nome": "Genau", "empresa": "Yoobe", "telefone": "",
                "cargo": "Gestão", "porte_assinantes": "", "erp": "", "tags": ""}
     # Testes não recebem link de descadastro: o destinatário pode ser uma caixa
     # interna e a amostra não faz parte da base/cadência. O tracking, quando
@@ -2180,7 +2226,7 @@ def campaign_test_send(cid: int, body: TesteCampanhaBody):
     plain = engine.render_vars((tpl or {}).get("texto_plano") or "", contato)
     tracking_cid = cid if body.rastrear else None
     msgid, thread_id, track_id = engine.enviar_email(
-        contato, f"[TESTE 4UNIK] {assunto}", html, plain,
+        contato, f"[TESTE Yoobe] {assunto}", html, plain,
         campaign_id=tracking_cid, etapa=f"teste-{body.etapa}", sender=sender)
     if not msgid:
         return JSONResponse({"erro": "o Gmail não retornou id para o envio de teste"}, status_code=502)
@@ -2212,6 +2258,10 @@ def campaign_activate(cid: int, body: Optional[AtivarBody] = None):
     if not camp:
         c.close()
         return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
+    sender_blocked = _campaign_sender_guard(camp)
+    if sender_blocked:
+        c.close()
+        return sender_blocked
     confirmacao = (body.confirmacao if body else "").strip()
     soft_token = confirmacao in ("ENVIAR_COM_PENDENCIAS", "CHECKLIST_OK")
     if soft_token:
@@ -2351,7 +2401,7 @@ def campaign_activate(cid: int, body: Optional[AtivarBody] = None):
     if prot["total"] > 0 and confirmacao != "QUERO_ENVIAR":
         c.close()
         return JSONResponse({
-            "erro": (f"Esta campanha inclui {prot['total']} contato(s) que são CLIENTES 4unik "
+            "erro": (f"Esta campanha inclui {prot['total']} contato(s) que são CLIENTES Yoobe "
                      f"({prot['ativos']} ativos, {prot['inativos']} inativos, {prot['possiveis']} possíveis). "
                      "Para enviar mesmo assim, confirme digitando QUERO_ENVIAR."),
             "requer_confirmacao": True, "token": "QUERO_ENVIAR",
@@ -2417,7 +2467,7 @@ def campaign_activate(cid: int, body: Optional[AtivarBody] = None):
                "duvidosos": report["duvidosos"], "stale": report["stale"],
                "amostra_excluidos": report.get("amostra_excluidos") or [],
            },
-           "utm": {"utm_source": "4unik-mail", "utm_medium": "email", "utm_campaign": slug}}
+           "utm": {"utm_source": "yoobe-mail", "utm_medium": "email", "utm_campaign": slug}}
     if imediato:
         out.update({
             "imediato": True,
@@ -2444,6 +2494,12 @@ def campaign_launch_now(cid: int, body: Optional[AtivarBody] = None):
     c.close()
     if not camp:
         return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
+    c = db.conn()
+    campaign_row = c.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
+    c.close()
+    sender_blocked = _campaign_sender_guard(campaign_row)
+    if sender_blocked:
+        return sender_blocked
     if camp["status"] not in {"rascunho", "pausada", "ativa"}:
         return JSONResponse({"erro": "a campanha está encerrada e não pode ser disparada"},
                             status_code=409)
@@ -2482,7 +2538,7 @@ def campaign_launch_now(cid: int, body: Optional[AtivarBody] = None):
     if prot["total"] > 0 and not (camp_full and camp_full["clientes_confirmados"]) \
             and confirmacao != "QUERO_ENVIAR":
         return JSONResponse({
-            "erro": (f"Esta campanha inclui {prot['total']} cliente(s) 4Unik. "
+            "erro": (f"Esta campanha inclui {prot['total']} cliente(s) Yoobe. "
                      "Para disparar agora, digite QUERO_ENVIAR."),
             "requer_confirmacao": True, "token": "QUERO_ENVIAR",
             "clientes": prot["total"], "ativos": prot["ativos"],
@@ -2879,6 +2935,7 @@ def senders_list():
     c = db.conn()
     rows = [dict(r) for r in c.execute("SELECT * FROM senders ORDER BY id").fetchall()]
     for s in rows:
+        s["para_campanha_nova"] = (s.get("email") or "").strip().lower() == "genau@yoobe.co"
         st = engine.sender_auth_status(s)
         s["conectado"], s["status_motivo"] = st["conectado"], st["motivo"]
         s["auto_reply_on"] = s["auto_reply"] == "on"
@@ -2967,6 +3024,9 @@ class SenderCreate(BaseModel):
 def sender_create(payload: SenderCreate):
     """Cadastra um remetente novo, sempre desconectado e com perfil GWS isolado."""
     email = payload.email.strip().lower()
+    if email != "genau@yoobe.co":
+        return JSONResponse({"erro": "O único remetente de campanhas é genau@yoobe.co."},
+                            status_code=409)
     if not re.fullmatch(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", email):
         return JSONResponse({"erro": "informe um e-mail válido"}, status_code=422)
 
@@ -3607,7 +3667,7 @@ def campaign_ads_briefing(cid: int):
         return JSONResponse({"erro": "campanha não encontrada"}, status_code=404)
     b = camp.get("ads_briefing") or ""
     return {"id": cid, "briefing": json.loads(b) if b else None,
-            "utm": {"utm_source": "4unik-mail", "utm_medium": "email",
+            "utm": {"utm_source": "yoobe-mail", "utm_medium": "email",
                     "utm_campaign": camp.get("slug") or db.campaign_slug(cid)}}
 
 

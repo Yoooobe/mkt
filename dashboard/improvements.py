@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4unik.mail — orquestrador de melhorias de campanha (planner → copy → validador → apply).
+"""Yoobe.mail — orquestrador de melhorias de campanha (planner → copy → validador → apply).
 
 Sugestões do briefing (riscos / checklist / recomendar ajustar) viram tasks executáveis.
 Agentes só produzem proposed_patch; a escrita é do aplicador transacional.
@@ -918,7 +918,7 @@ def _planner_prompt(run: dict) -> str:
                     "max_iterations": v.get("max_iterations"),
                     "guardrails": v.get("guardrails")}
                 for k, v in cats.items()}
-    return f"""Você é o planner multiagente de melhorias de campanha da 4Unik.
+    return f"""Você é o planner multiagente de melhorias de campanha da Yoobe.
 
 TAREFA: classificar cada sugestão, escolher o agente, definir ordem de execução
 e dependências, e detectar conflitos (duas tasks que alterariam o mesmo path).
@@ -1009,7 +1009,7 @@ def _executor_prompt(cid: int, task: dict, feedback: str = "") -> str:
             "inner_html": (t.get("inner_html") or "")[:4000],
         } for t in templates],
     }
-    return f"""Você é o agente copy de otimização de campanha da 4Unik.
+    return f"""Você é o agente copy de otimização de campanha da Yoobe.
 
 ENTRADA (JSON): campanha atual, sugestão a resolver, templates afetados,
 feedback da iteração anterior (se houver).
@@ -1070,7 +1070,7 @@ Reprove por padrão se houver dúvida.
 Cheque: (1) o patch resolve a sugestão? (2) `from` bate com o valor atual?
 (3) alterou algo além do necessário? (4) o `verification` é objetivo?
 (5) há risco de compliance (LGPD, claim sem lastro, dado pessoal, promessa)?
-(6) a qualidade do texto está à altura da marca 4Unik?
+(6) a qualidade do texto está à altura da marca Yoobe?
 (7) se path for objetivo/contexto, o Resumo ficou mais claro (labels + prosa)?
 (8) REPROVE se algum change tiver from==to (sem efeito real).
 (9) REPROVE se verification citar E1–E4/e-mails/steps mas changes só tiverem

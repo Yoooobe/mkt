@@ -3,7 +3,7 @@
 Cole este prompt no Codex depois de extrair o zip e abrir a pasta `gws-4unik`:
 
 ```text
-Você está dentro da pasta gws-4unik no meu Mac. Quero instalar e subir o 4unik.mail localmente.
+Você está dentro da pasta gws-4unik no meu Mac. Quero instalar e subir o Yoobe.mail localmente.
 
 Faça nesta ordem:
 1. Leia SETUP-GUIDE-GENAU.md e CLAUDE.md.
@@ -20,7 +20,7 @@ Faça nesta ordem:
 6. Suba o dashboard com ./start-dashboard.sh.
 7. Abra ou me informe a URL http://localhost:8377.
 8. Use o CSV samples/contatos-exemplo-4unik.csv para importar contatos de teste no CRM.
-9. Confirme que existe uma campanha exemplo da 4Unik em rascunho e que os templates estão prontos para revisão.
+9. Confirme que existe uma campanha exemplo da Yoobe em rascunho e que os templates estão prontos para revisão.
 10. Não envie nenhum email real. Se for preparar um teste, use somente contatos com tag teste e me peça confirmação antes de ativar qualquer campanha.
 
 Depois disso, me diga exatamente:

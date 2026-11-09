@@ -1,7 +1,7 @@
-# 4Unik — GTM e Growth (base oficial)
+# Yoobe — GTM e Growth (base oficial)
 
 ## Posicionamento
-A 4Unik é uma **Infraestrutura de Engajamento Programável**, API-first: transforma regras, metas e behavioral triggers em rewards físicos rastreáveis, com gamificação, checkout e fulfillment automatizado. Não posicionar como fornecedora de brindes, kits ou produtos promocionais.
+A Yoobe é uma **Infraestrutura de Engajamento Programável**, API-first: transforma regras, metas e behavioral triggers em rewards físicos rastreáveis, com gamificação, checkout e fulfillment automatizado. Não posicionar como fornecedora de brindes, kits ou produtos promocionais.
 
 Termos preferidos: rewards, behavioral triggers, engagement infrastructure, physical execution layer, fulfillment automatizado, checkout transparente, SaaS infrastructure e Engagement Autopilot.
 

@@ -1,4 +1,4 @@
-"""Agente ADK: classificador de respostas de leads da 4Unik.
+"""Agente ADK: classificador de respostas de leads da Yoobe.
 
 Espelha ai.classificar_resposta (mesmas classes e regras): a IA interpreta,
 o código decide. Pronto para deploy no Vertex AI Agent Engine.
@@ -15,7 +15,7 @@ _HERE = Path(__file__).resolve().parent
 GUARDRAIL = (
     "GUARDRAIL: você produz SOMENTE rascunhos e classificações. Nunca afirme que "
     "algo foi enviado, publicado ou ativado — a aprovação e o envio são decisões "
-    "do código e da equipe 4Unik, nunca suas."
+    "do código e da equipe Yoobe, nunca suas."
 )
 
 
@@ -30,15 +30,15 @@ def kb_context(max_chars: int = 14000) -> str:
               for f in sorted(kb_dir.glob("*.md"))]
     return "\n\n".join(partes)[:max_chars]
 
-CALENDLY = "https://calendly.com/4unik/30min?month=2026-07"
+CALENDLY = "https://corporate.yoobe.co/"
 
-INSTRUCTION = f"""Você é o assistente comercial do Time 4Unik. Um lead respondeu a um
+INSTRUCTION = f"""Você é o assistente comercial do Time Yoobe. Um lead respondeu a um
 e-mail de campanha. Interprete a resposta e devolva SOMENTE JSON válido:
 {{"classificacao": "pergunta_simples | agendar | interessado | objecao_preco | duvida_complexa | pediu_tempo | recusa_encerrar | outro",
   "confianca": 0.0,
   "intencao_reuniao": false,
   "precisa_humano": false,
-  "resposta_sugerida": "resposta cordial em pt-BR terminando com 'Atenciosamente, Time 4Unik'",
+  "resposta_sugerida": "resposta cordial em pt-BR terminando com 'Atenciosamente, Time Yoobe'",
   "resumo": "1-2 frases em pt-BR"}}
 
 REGRAS (NUNCA violar):
@@ -49,12 +49,12 @@ REGRAS (NUNCA violar):
 - Ambiguidade → confianca < 0.8.
 - {GUARDRAIL}
 
-CONTEXTO (KBs da 4Unik):
+CONTEXTO (KBs da Yoobe):
 {kb_context()}"""
 
 root_agent = Agent(
     name="reply_classifier",
     model="gemini-2.5-flash",
-    description="Classifica respostas de leads da 4Unik e sugere resposta (JSON, nunca envia).",
+    description="Classifica respostas de leads da Yoobe e sugere resposta (JSON, nunca envia).",
     instruction=INSTRUCTION,
 )

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4unik.mail — telemetria de agentes Vertex (tokens, tarefas, conhecimento).
+"""Yoobe.mail — telemetria de agentes Vertex (tokens, tarefas, conhecimento).
 
 Persiste cada chamada LLM em `agent_runs` e insights curtos em `agent_knowledge`.
 O dashboard `#/agentes` consome estes dados para orquestrar e auditar gastos.
@@ -43,7 +43,7 @@ _FALLBACK_AGENTS = [
     {"id": "estrategista", "nome": "Estrategista", "tier": "pro",
      "via": "generate_json", "env": "",
      "papel": "Plano / briefing / portfolio",
-     "skills": ["gtm-engineer-growth-specialist (4Unik/GTM, interno)",
+     "skills": ["gtm-engineer-growth-specialist (Yoobe/GTM, interno)",
                 "email-sequence (community)", "growth-engine (community)"],
      "pipeline": ["criar", "melhorias"]},
     {"id": "copywriter", "nome": "Copywriter", "tier": "pro",
@@ -61,7 +61,7 @@ _FALLBACK_AGENTS = [
     {"id": "estrategista_gtm", "nome": "Estrategista GTM", "tier": "pro",
      "via": "generate_json", "env": "",
      "papel": "Briefing de lançamento e go/no-go",
-     "skills": ["gtm-engineer-growth-specialist (4Unik/GTM, interno)",
+     "skills": ["gtm-engineer-growth-specialist (Yoobe/GTM, interno)",
                 "growth-engine (community)"],
      "pipeline": ["criar"]},
     {"id": "validador", "nome": "Validador", "tier": "flash",
@@ -74,7 +74,7 @@ _FALLBACK_AGENTS = [
     {"id": "grok_critic", "nome": "Grok Critic", "tier": "pro",
      "via": "grok", "env": "GROK_ENABLED",
      "papel": "Segundo parecer: portfólio, melhorias e SEO/GEO",
-     "skills": ["gtm-engineer-growth-specialist (4Unik/GTM, interno)",
+     "skills": ["gtm-engineer-growth-specialist (Yoobe/GTM, interno)",
                 "growth-engine (community)", "copywriting (community)"],
      "pipeline": ["criar", "melhorias", "seo_geo"]},
 ]

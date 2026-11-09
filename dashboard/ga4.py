@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""4unik.mail — GA4: leitura via Data API v1beta (REST + service account) e
+"""Yoobe Mail — GA4: leitura via Data API v1beta (REST + service account) e
 espelhamento de campanhas via Measurement Protocol.
 
 Sem credencial configurada, tudo degrada graciosamente ({"configurado": False}).
@@ -24,8 +24,8 @@ except ImportError:  # sem certifi, usa o default do sistema
 PROPERTY_ID = ENV.get("GA4_PROPERTY_ID", "") or ENV.get("GOOGLE_GA4_PROPERTY_ID", "")
 CREDENTIALS_JSON = ENV.get("GA4_CREDENTIALS_JSON", "")
 HOSTS = {
-    "plataforma": ENV.get("GA4_HOSTNAME_PLATAFORMA", "plataforma.4unik.com.br"),
-    "site": ENV.get("GA4_HOSTNAME_LOJA", "4unik.com.br"),
+    "plataforma": ENV.get("GA4_HOSTNAME_PLATAFORMA", "corporate.yoobe.co"),
+    "site": ENV.get("GA4_HOSTNAME_LOJA", "catalogo.yoobe.co"),
 }
 MEASUREMENT_ID = ENV.get("GA4_MEASUREMENT_ID", "") or ENV.get("GOOGLE_GA4_MEASUREMENT_ID", "")
 MP_API_SECRET = ENV.get("GA4_MP_API_SECRET", "")
@@ -259,8 +259,11 @@ def utm_campaign_report(days=28):
             "dateRanges": _date_range(days),
             "dimensions": [{"name": "sessionCampaignName"}],
             "metrics": [{"name": "sessions"}, {"name": "totalUsers"}, {"name": "keyEvents"}],
-            "dimensionFilter": {"filter": {"fieldName": "sessionSource",
-                                           "stringFilter": {"value": "4unik-mail"}}},
+            "dimensionFilter": {"orGroup": {"expressions": [
+                {"filter": {"fieldName": "sessionSource",
+                             "stringFilter": {"value": source}}}
+                for source in ("yoobe-mail", "4unik-mail")
+            ]}},
             "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}],
             "limit": "50",
         }]
@@ -281,14 +284,14 @@ def utm_campaign_report(days=28):
 
 
 def mp_send_event(name, params):
-    """Measurement Protocol — marca eventos do 4unik.mail na linha do tempo do GA4.
+    """Measurement Protocol — marca eventos do Yoobe Mail na linha do tempo do GA4.
     Falha só loga; nunca bloqueia o fluxo de campanha."""
     if not (MEASUREMENT_ID and MP_API_SECRET):
         return False
     try:
         url = (f"https://www.google-analytics.com/mp/collect"
                f"?measurement_id={MEASUREMENT_ID}&api_secret={MP_API_SECRET}")
-        body = {"client_id": "4unik-mail.server",
+        body = {"client_id": "yoobe-mail.server",
                 "events": [{"name": name, "params": params}]}
         req = urllib.request.Request(url, data=json.dumps(body).encode(),
                                      headers={"Content-Type": "application/json"})
@@ -307,7 +310,7 @@ SANITY_DATASET = ENV.get("SANITY_DATASET", "production")
 def site_leads(limit=50):
     """Leads IDENTIFICADOS do formulário do site (nome/email/empresa/origem) — não vêm do
     GA4 (que só conta eventos anônimos): a leads-ingest-api grava cada submissão como
-    documento leadSubmission no Sanity e notifica comercial@4unik.com.br por email."""
+    documento leadSubmission no Sanity e notifica corporate@yoobe.co por email."""
     def fetch():
         q = ('*[_type=="leadSubmission"]|order(_createdAt desc)[0...%d]'
              '{_createdAt, name, nome, email, empresa, company, phone, telefone,'

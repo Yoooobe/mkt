@@ -1,6 +1,6 @@
-# 4unik.mail / gws-4unik
+# Yoobe.mail / gws-4unik
 
-Repositório do dashboard local de CRM e email marketing da 4unik, com tracking
+Repositório do dashboard local de CRM e email marketing da Yoobe, com tracking
 de abertura/clique, geração de campanhas, templates e worker de coleta.
 
 ## O que foi publicado

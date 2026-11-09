@@ -1,4 +1,4 @@
-# 4unik.mail — dashboard local de email marketing com IA
+# Yoobe.mail — dashboard local de email marketing com IA
 
 MVP local em `http://localhost:8377` usando FastAPI, SQLite e JavaScript simples.
 O sistema gerencia contatos, tags, campanhas, templates, fila de envio, respostas,
@@ -32,7 +32,7 @@ reward infrastructure, gamificação, carteiras, loja corporativa, API, fulfillm
 - Respostas pausam a sequência do contato.
 - Opt-out, hard bounce e soft bounce reincidente suprimem contatos.
 - Tracking de abertura/clique é opcional via os endpoints públicos
-  `https://plataforma.4unik.com.br/api/email/*`, persistidos no Sanity.
+  `https://corporate.yoobe.co/api/email/*`, persistidos no Sanity.
 - No boot e a cada ciclo de 30 min, o **Ciclo de estratégia** sincroniza dados,
   corrige tags, atualiza a qualidade do CRM e verifica o Claude. Ele não cria,
   aprova, ativa nem envia campanhas automaticamente.

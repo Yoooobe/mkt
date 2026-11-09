@@ -1,5 +1,5 @@
 /**
- * 4unik.mail — coletor de rastreio de e-mail (Cloudflare Worker + D1).
+ * Yoobe.mail — coletor de rastreio de e-mail (Cloudflare Worker + D1).
  *
  * Sempre-online: registra cada abertura/clique na borda, sem depender do notebook.
  * Token stateless assinado por HMAC (mesmo segredo do dashboard, em db.py).
@@ -90,7 +90,7 @@ export default {
     // clique -> 302 para a URL original
     if (path.startsWith("/c/")) {
       const p = await verifyToken(decodeURIComponent(path.slice(3)), env.TRACKING_SECRET);
-      const dest = p && p.u ? p.u : "https://plataforma.4unik.com.br";
+      const dest = p && p.u ? p.u : "https://corporate.yoobe.co";
       if (p) { try { await logEvent(env, "click", p, req, dest); } catch (e) {} }
       return new Response(null, {
         status: 302,
@@ -108,14 +108,14 @@ export default {
       }
       const html = `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Descadastro — 4Unik</title></head>
+<title>Descadastro — Yoobe</title></head>
 <body style="margin:0;background:#f0f3f5;font-family:'DM Sans',Arial,sans-serif;color:#1a0a2e">
 <div style="max-width:480px;margin:48px auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 6px 24px rgba(34,9,58,.08)">
 <div style="background:linear-gradient(160deg,#1f2933,#0f1720);padding:24px 32px">
 <span style="font-family:Montserrat,Arial,sans-serif;font-size:22px;font-weight:800;color:#fff">4<span style="color:#66e3c4">Unik</span></span></div>
 <div style="padding:32px">
 <h1 style="font-family:Montserrat,Arial,sans-serif;font-size:20px;color:#22093a;margin:0 0 12px">Pronto, você foi descadastrado ✓</h1>
-<p style="font-size:15px;line-height:1.6;margin:0 0 8px">${p && p.email ? p.email : "Seu e-mail"} não receberá mais a newsletter nem as comunicações da 4Unik.</p>
+<p style="font-size:15px;line-height:1.6;margin:0 0 8px">${p && p.email ? p.email : "Seu e-mail"} não receberá mais a newsletter nem as comunicações da Yoobe.</p>
 <p style="font-size:13px;color:#6b7c87;margin:14px 0 0">Mudou de ideia? É só responder a qualquer e-mail nosso que a gente reativa. Obrigado por ter acompanhado até aqui!</p>
 </div></div></body></html>`;
       return new Response(html, {
@@ -143,6 +143,6 @@ export default {
       });
     }
 
-    return new Response("4unik.mail tracking", { status: 404 });
+    return new Response("Yoobe.mail tracking", { status: 404 });
   },
 };

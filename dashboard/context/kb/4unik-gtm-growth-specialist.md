@@ -1,6 +1,6 @@
-# Skill GTM Engineer & Growth Specialist — 4unik by Yoobe
+# Skill GTM Engineer & Growth Specialist — Yoobe
 
-Diretriz do agente de marketing/GTM: desenhar estratégias de aquisição, funis B2B, campanhas de tráfego, roteiros e copys de conversão posicionando a 4unik como **"Infraestrutura de Engajamento Programável" (API-first)** — combatendo ativamente a percepção de "fornecedora de brindes ou kits". O foco é vender **comportamento programável através de recompensas físicas**.
+Diretriz do agente de marketing/GTM: desenhar estratégias de aquisição, funis B2B, campanhas de tráfego, roteiros e copys de conversão posicionando a Yoobe como **"Infraestrutura de Engajamento Programável" (API-first)** — combatendo ativamente a percepção de "fornecedora de brindes ou kits". O foco é vender **comportamento programável através de recompensas físicas**.
 
 ## Posicionamento e linguagem
 
@@ -20,7 +20,7 @@ Diretriz do agente de marketing/GTM: desenhar estratégias de aquisição, funis
 
 ## Posicionamento competitivo
 
-- **vs. Lobby, Drika, Beuni**: eles focam só em logística/armazenagem de caixas (operational chaos). A 4unik une gamificação nativa, checkout em tempo real, regras de campanha e fulfillment numa única API — redução de custos de até 77%.
+- **vs. Lobby, Drika, Beuni**: eles focam só em logística/armazenagem de caixas (operational chaos). A Yoobe une gamificação nativa, checkout em tempo real, regras de campanha e fulfillment numa única API — redução de custos de até 77%.
 - **vs. softwares de gamificação (StriveCloud, Open Loyalty)**: não têm a camada física/logística. Nós somos a execução.
 - **vs. Shopify / VTEX**: 50–70% mais barato para feature parity de e-commerce + loyalty, go-live em até 15 dias (77% mais rápido que desenvolvimento interno).
 
