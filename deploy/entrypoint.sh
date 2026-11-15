@@ -70,9 +70,11 @@ restore_db() {
   if [ "${FORCE_SEED_DB:-}" = "1" ]; then
     NEED_SEED=1
     echo "[entrypoint] FORCE_SEED_DB=1"
-  elif [ -n "$REMOTE_SEED_SHA" ] && [ "$REMOTE_SEED_SHA" != "$LOCAL_SEED_SHA" ]; then
+  elif [ -n "$REMOTE_SEED_SHA" ] && [ -n "$LOCAL_SEED_SHA" ] && [ "$REMOTE_SEED_SHA" != "$LOCAL_SEED_SHA" ]; then
     NEED_SEED=1
     echo "[entrypoint] seed/version.txt novo ($REMOTE_SEED_SHA ≠ ${LOCAL_SEED_SHA:-vazio}) — reseed"
+  elif [ -n "$REMOTE_SEED_SHA" ] && [ -z "$LOCAL_SEED_SHA" ]; then
+    echo "[entrypoint] sem marcador local — priorizando restore Litestream sobre o seed"
   fi
 
   if [ "$NEED_SEED" = "1" ] && [ -n "${R2_ENDPOINT:-}" ]; then
