@@ -46,12 +46,16 @@ interface Env {
   GOOGLE_ADS_CUSTOMER_ID?: string;
   GOOGLE_ADS_LOGIN_CUSTOMER_ID?: string;
   GOOGLE_ADS_DEVELOPER_TOKEN?: string;
+  GMAIL_OAUTH_CLIENT_ID?: string;
+  GMAIL_OAUTH_CLIENT_SECRET?: string;
+  GMAIL_OAUTH_REDIRECT_URI?: string;
+  GMAIL_OAUTH_ENCRYPTION_KEY?: string;
   VERTEX_MODEL_PRO?: string;
   VERTEX_MODEL_FLASH?: string;
   LEADS_NOTIFY_EMAIL?: string;
   // Plain var (wrangler.jsonc vars) — "1" força seed no boot (rebootstrap).
   FORCE_SEED_DB?: string;
-  // local | remoto — remoto = espelho (sem criar/editar/enviar campanhas).
+  // local | operacional | remoto (espelho de acompanhamento).
   DASHBOARD_ENV?: string;
 }
 
@@ -105,6 +109,10 @@ export class DashboardContainer extends Container<Env> {
     GOOGLE_ADS_CUSTOMER_ID: this.env.GOOGLE_ADS_CUSTOMER_ID ?? "",
     GOOGLE_ADS_LOGIN_CUSTOMER_ID: this.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID ?? "",
     GOOGLE_ADS_DEVELOPER_TOKEN: this.env.GOOGLE_ADS_DEVELOPER_TOKEN ?? "",
+    GMAIL_OAUTH_CLIENT_ID: this.env.GMAIL_OAUTH_CLIENT_ID ?? "",
+    GMAIL_OAUTH_CLIENT_SECRET: this.env.GMAIL_OAUTH_CLIENT_SECRET ?? "",
+    GMAIL_OAUTH_REDIRECT_URI: this.env.GMAIL_OAUTH_REDIRECT_URI ?? "",
+    GMAIL_OAUTH_ENCRYPTION_KEY: this.env.GMAIL_OAUTH_ENCRYPTION_KEY ?? "",
   };
 }
 

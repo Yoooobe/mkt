@@ -4,6 +4,7 @@ python-multipart
 openpyxl
 xlrd
 google-auth
+cryptography
 requests
 certifi
 python-docx

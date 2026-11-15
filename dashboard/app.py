@@ -38,6 +38,7 @@ import sync
 import strategy
 import google_media
 import vertex
+import gmail_oauth
 
 ENV_FILE = db.BASE / ".env"
 
@@ -160,16 +161,19 @@ async def auth(request: Request, call_next):
 
 @app.get("/api/health")
 def api_health():
-    """Identidade do ambiente + flags para a UI (local dono / remoto espelho)."""
+    """Identidade do ambiente + flags para a UI (operacional ou espelho)."""
     env = db.dashboard_env()
+    dono = env in ("local", "operacional")
     return {
         "ok": True,
         "dashboard_env": env,
-        "dono_campanhas": env == "local",
+        "dono_campanhas": dono,
         "espelho": env == "remoto",
-        "nota": ("Local cria/edita/envia campanhas. Remoto acompanha campanhas de origem local."
+        "nota": ("Painel remoto: autoridade de criação, edição e envio de campanhas."
+                 if env == "operacional" else
+                 "Remoto acompanha campanhas de origem local; o envio fica desligado."
                  if env == "remoto" else
-                 "Ambiente local: autoridade de criação e alteração de campanhas."),
+                 "Painel local: autoridade de criação e alteração de campanhas."),
     }
 
 
@@ -1917,6 +1921,9 @@ def campaign_get(cid: int):
 
 
 class NovaCampanha(BaseModel):
+    business_unit: str = ""
+    market: str = ""
+    language: str = ""
     objetivo: str
     tipo: str = "finita"                 # finita | infinita
     cad_min: Optional[int] = None        # cadência aleatória: sorteio entre min e max dias
@@ -2094,9 +2101,13 @@ def campaign_ai_create(nc: NovaCampanha):
         return sender
     if nc.tipo == "infinita" and nc.cad_min is None:
         nc.cad_min, nc.cad_max = 7, 14
+    try:
+        ai.business_context.resolve(objective=nc.objetivo, business_unit=nc.business_unit, market=nc.market, language=nc.language)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     cid = ai.criar_campanha(nc.objetivo, nc.tipo, nc.cad_min, nc.cad_max,
                             nc.n_emails, nc.segmentos, nc.apenas_sem_resposta, nc.tags, sender["id"],
-                            _normaliza_dt(nc.inicio_em), nc.audience_profile or "")
+                            _normaliza_dt(nc.inicio_em), nc.audience_profile or "", nc.business_unit, nc.market, nc.language)
     return {"id": cid, "status": "gerando",
             "nota": "Campanha criada em rascunho. A IA está redigindo os e-mails em segundo plano — "
                     "acompanhe o progresso na tela da campanha."}
@@ -2141,7 +2152,7 @@ def campaign_from_template(b: CampanhaTemplate):
                  VALUES(?,?,?,'rascunho',?,?,?,?,?,?,?)""",
               (nome, f"Campanha a partir do template '{t.get('nome') or t.get('assunto')}'", b.tipo,
                cad_min, cad_max, "Criada a partir de template existente", sender["id"],
-               _normaliza_dt(b.inicio_em), b.audience_profile or "", db.dashboard_env()))
+               _normaliza_dt(b.inicio_em), b.audience_profile or "", db.campaign_origin()))
     cid = c.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
     # Clone exclusivo — nunca compartilha o ref da biblioteca/base.
     c.execute("""INSERT INTO templates_ai(nome,assunto,preheader,cta,cta_url,inner_html,texto_plano,
@@ -2986,25 +2997,41 @@ def sender_setup(sid: int):
 
 @app.post("/api/senders/{sid}/connect")
 def sender_connect(sid: int):
-    """Inicia o login OAuth do perfil gws e devolve a URL de autorização para o
-    usuário clicar/copiar. O processo fica aguardando o callback local; ao concluir
-    no navegador, use GET /api/senders/{sid}/status para confirmar.
-
-    No remoto (Cloudflare) o callback é localhost dentro do container — o browser
-    do usuário nunca completa o fluxo. Autentique no Mac e sincronize gws_accounts.
-    """
+    """Inicia o OAuth do remetente no ambiente apropriado."""
     if db.dashboard_env() == "remoto":
         return JSONResponse({
-            "erro": ("Conectar Gmail só funciona no Mac (localhost:8377). "
-                     "OAuth usa callback localhost no processo gws — no container "
-                     "remoto isso não chega ao seu navegador. "
-                     "Logue no local e rode: ./scripts/sync-local-to-remote.sh --with-accounts"),
+            "erro": "O remoto está em modo espelho e não aceita autenticação de remetentes.",
             "somente_local": True,
         }, status_code=409)
+    if db.dashboard_env() == "operacional":
+        s = db.sender_get(sid)
+        if not s:
+            return JSONResponse({"erro": "remetente não encontrado"}, status_code=404)
+        try:
+            url = gmail_oauth.begin(sid)
+        except ValueError as exc:
+            return JSONResponse({"erro": str(exc)}, status_code=409)
+        return {"ok": True, "url": url, "email": s["email"],
+                "nota": f"Autorize o Gmail como {s['email']}; depois volte e clique em Verificar."}
     r = engine.iniciar_login(sid)
     if not r.get("ok"):
         return JSONResponse({"erro": r.get("erro", "falha ao iniciar login")}, status_code=502)
     return r
+
+
+@app.get("/oauth/gmail/callback", include_in_schema=False)
+def gmail_oauth_callback(code: str = "", state: str = "", error: str = ""):
+    if error:
+        return HTMLResponse(gmail_oauth.result_page(False, "A autorização do Google foi cancelada."), status_code=400)
+    try:
+        email = gmail_oauth.complete(code, state)
+        return HTMLResponse(gmail_oauth.result_page(
+            True, f"Gmail conectado como {email}. Volte ao painel e verifique o remetente."))
+    except ValueError as exc:
+        return HTMLResponse(gmail_oauth.result_page(False, str(exc)), status_code=400)
+    except Exception:
+        return HTMLResponse(gmail_oauth.result_page(
+            False, "Não foi possível concluir. Gere um novo link no painel."), status_code=502)
 
 
 class SenderUpdate(BaseModel):
@@ -4152,6 +4179,15 @@ def campaign_claim_local(cid: int):
     c.close()
     return {"id": cid, "origem_ambiente": "local", "ja_local": False,
             "nota": "Campanha importada como local — agora pode editar/ativar neste Mac."}
+
+
+@app.get("/api/context/preview")
+def context_preview(objetivo: str = "", business_unit: str = "", market: str = "", language: str = ""):
+    try:
+        return ai.business_context.resolve(objective=objetivo, business_unit=business_unit,
+                                           market=market, language=language)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/api/context")

@@ -4,10 +4,11 @@
   "name": "gws4unik-dashboard",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-15",
-  // Deixar "" no dia a dia. Só "1" no rebootstrap pontual (seed + wipe da réplica).
+  // Manter vazio para preservar a base R2; "1" só em rebootstrap deliberado.
   "vars": {
     "FORCE_SEED_DB": "",
-    "DASHBOARD_ENV": "remoto"
+    "DASHBOARD_ENV": "operacional",
+    "GMAIL_OAUTH_REDIRECT_URI": "https://gws4unik-dashboard.genau-d0b.workers.dev/oauth/gmail/callback"
   },
   "containers": [
     {

@@ -916,7 +916,7 @@ async function vCampanhas() {
       <button type="button" class="primary" onclick="dlgCampanha()">Nova campanha com IA</button>`;
   view.innerHTML = `
     <div class="toolbar"><h2 style="margin:0;text-wrap:pretty">Campanhas</h2>
-      ${espelho ? badge("espelho remoto", "pendente") : badge("local", "ativo")}
+      ${espelho ? badge("espelho remoto", "pendente") : badge(meta.dashboard_env === "operacional" ? "remoto operacional" : "local", "ativo")}
       <span class="sp"></span>
       ${createBtns}</div>
     <div class="toolbar filter-bar filter-bar--sticky" role="search" aria-label="Filtros de campanhas">
@@ -1116,7 +1116,7 @@ document.getElementById("nc-criar").onclick = async () => {
 
   const objetivo = document.getElementById("nc-objetivo").value.trim();
   if (!objetivo) return toast("Descreva o objetivo da campanha.");
-  const body = {...comum, objetivo, n_emails: +document.getElementById("nc-n").value || 3};
+  const body = {...comum, objetivo, business_unit: document.getElementById("nc-business").value, market: document.getElementById("nc-market").value, language: document.getElementById("nc-language").value, n_emails: +document.getElementById("nc-n").value || 3};
   document.getElementById("dlg-campanha").close();
   view.innerHTML = `<div class="card" style="text-align:center;padding:48px 24px">
     <div class="spinner"></div>
@@ -4214,11 +4214,13 @@ async function vContexto() {
     <div class="toolbar"><h2 style="margin:0">Contexto da IA</h2><span class="sp"></span>
       <button class="primary" onclick="document.getElementById('dlg-kb').showModal()">📚 Novo KB</button>
       <label class="btn">🖼 Enviar imagem<input type="file" id="ctx-img" accept="image/*" hidden></label></div>
-    <p class="muted">Tudo aqui é injetado nos prompts de criação de campanhas e templates:
-    KBs (markdown) viram conhecimento e as imagens ficam disponíveis para a IA citar nos emails.
-    Skills ativos: <b>gtm-engineer-growth-specialist</b> (interno), <b>email-creative-builder</b> (aaron-he-zhu, Apache-2.0),
-    <b>copywriting</b> / <b>copy-editing</b> / <b>email-sequence</b> / <b>growth-engine</b> (community).
-    Abrir esta tela sincroniza os skills no KB e semeia o Conhecimento dos agentes.</p>
+    <p class="muted">A geração usa os contextos comerciais revisados por negócio. KBs legados abaixo ficam preservados para revisão e não são fonte automática de claims.</p>
+    <div class="card"><h3>Simular contexto comercial</h3>
+      <select id="ctx-business"><option value="catalogo">Catálogo — kits e brindes</option><option value="corporate_platform">Corporate — plataforma</option><option value="corporate_api">Corporate — API</option></select>
+      <select id="ctx-market"><option value="br">Brasil · português</option><option value="international_with_brazil_team">Internacional com time no Brasil · inglês</option></select>
+      <button id="ctx-preview">Ver contexto e versão</button>
+      <pre id="ctx-result" class="json" style="white-space:pre-wrap"></pre>
+    </div>
     <div class="row">
       <div class="card grow"><h3>KBs (dashboard/context/kb/)</h3>
         ${d.kb.map(k => `<div class="card"><b>${esc(k.nome)}</b> <small class="muted">${k.tamanho} bytes</small>
@@ -4230,6 +4232,13 @@ async function vContexto() {
         <div class="imggrid">${d.imagens.map(i => `<figure style="margin:0"><img src="${i.url}" alt="${esc(i.nome)}">
           <figcaption><small>${esc(i.nome)}</small></figcaption></figure>`).join("") || '<span class="muted">nenhuma imagem</span>'}</div></div>
     </div>`;
+  document.getElementById("ctx-preview").onclick = async () => {
+    try {
+      const params = new URLSearchParams({business_unit: document.getElementById("ctx-business").value, market: document.getElementById("ctx-market").value});
+      const r = await api("/api/context/preview?" + params);
+      document.getElementById("ctx-result").textContent = `Versão: ${r.version} · ${r.characters} caracteres · idioma: ${r.language}\n\n${r.text}`;
+    } catch (e) { toast(e.message, 5000); }
+  };
   document.getElementById("ctx-img").onchange = async e => {
     const fd = new FormData(); fd.append("file", e.target.files[0]);
     await api("/api/context/images", {method: "POST", body: fd});

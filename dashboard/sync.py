@@ -36,6 +36,9 @@ def _gws(args, home=None):
         env = os.environ.copy()
         env["HOME"] = str(home)
         env["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
+        if db.dashboard_env() == "operacional":
+            import gmail_oauth
+            env["GOOGLE_WORKSPACE_CLI_TOKEN"] = gmail_oauth.access_token_for_home(home)
     out = subprocess.run(["gws", "gmail"] + args, capture_output=True, text=True,
                          timeout=60, env=env)
     try:

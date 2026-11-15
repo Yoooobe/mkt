@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 
 import agent_usage
+import business_context
 import db
 import grok
 import leads
@@ -93,23 +94,14 @@ _SKILL_COMMUNITY = {
     "growth-engine": [Path.home() / ".agents" / "skills" / "growth-engine"],
 }
 
-# Regra operacional para toda geração de aquisição. O KB detalha provas, planos
-# e ICPs; este guia fixa o formato e impede que a IA volte ao enquadramento de
-# fornecedor de brindes em e-mails, anúncios ou briefings.
 GUIA_GTM_CAMPANHAS = """GUIA GTM OBRIGATÓRIO:
-- Posicione a Yoobe como Infraestrutura de Engajamento Programável, API-first:
-  comportamento programável por rewards, gamificação, checkout e execução física.
-- Nunca use em copy os termos "brindes", "kits" ou "produtos promocionais". Prefira
-  rewards, behavioral triggers, camada de execução física, checkout transparente e fulfillment automatizado.
-- Escolha UM ICP dominante (RH/People, Vendas/RevOps, E-learning/L&D, Comunidades/Eventos ou CTO/Produto)
-  e abra pela dor operacional concreta desse ICP.
-- Toda sequência deve conter: gancho de dor, como funciona, prova ou hipótese claramente rotulada,
-  objeção/ROI e CTA para demonstração. Não repita o mesmo ângulo.
-- Só use preços, percentuais, cases e comparativos que estejam nos KBs. Quando um ROI depender de
-  premissa, explicite a premissa; não prometa retorno garantido.
-- O CTA deve levar ao Calendly ou WhatsApp oficial. Para aquisição, planeje UTMs e os eventos GA4
-  generate_lead, schedule_demo, contact_whatsapp ou contact_email.
-- Produza somente rascunhos. Não afirme que campanhas, anúncios, GTM ou conteúdo foram publicados."""
+- Respeite o negócio, mercado e idioma do contexto comercial selecionado.
+- Catálogo vende brindes e kits personalizados: esses termos são permitidos e relevantes.
+- Corporate Plataforma vende programas recorrentes; Corporate API aborda integração técnica.
+- Use somente claims comerciais aprovados no contexto revisado; não invente preços, SLA ou cases.
+- Um ICP, uma dor e um CTA principal coerente com o destino fornecido no contexto.
+- Não chamar a home Corporate de Calendly. CTA de orçamento aponta para o Catálogo.
+- Planeje atribuição por UTMs sem dados pessoais. Produza somente rascunhos."""
 
 # Skill Email Creative Builder (aaron-he-zhu / Apache-2.0) — craft ousado de assunto/corpo.
 # Fonte: 0-skill-email-creative-builder.md + subject-specs + modes (sync_skill_kbs).
@@ -120,7 +112,7 @@ GUIA_EMAIL_CREATIVE = """GUIA EMAIL CREATIVE (skill email-creative-builder · aa
   Prefira ganchos específicos e ousados; evite genéricos ("oportunidade", "parceria", "solução inovadora").
   Sem clickbait vazio, sem ALL-CAPS, sem excesso de pontuação/emoji (≤1 emoji se fizer sentido).
   Respeite limites de inbox (~40–60 chars preferível; truncar com graça). Preheader complementa, não repete.
-- Corpo: escaneável, uma ideia por parágrafo, UM CTA primário alinhado ao destino (Calendly/WhatsApp).
+- Corpo: escaneável, uma ideia por parágrafo, UM CTA primário alinhado ao destino comercial do negócio.
 - Message-match: o e-mail não promete o que o destino/KBs não sustentam. Não invente preço, case ou %.
 - De-slop: corte frases de IA ("no mundo de hoje", "revolucionar", "synergy"). Tom humano Time Yoobe.
 - Use os KBs 0-skill-email-creative-builder / 0-skill-email-subject-specs / 0-skill-email-creative-modes
@@ -296,22 +288,35 @@ def _kb_priority(name: str) -> int:
     return 2
 
 
-def contexto(max_chars=MAX_KB_CHARS):
-    """Concatena os KBs (prioridade Yoobe → skills → resto) e lista imagens."""
-    files = sorted(KB_DIR.glob("*.md"), key=lambda f: (_kb_priority(f.name), f.name))
-    partes = []
-    for f in files:
-        partes.append(f"### KB: {f.name}\n{f.read_text(encoding='utf-8', errors='replace')}")
-    kb = "\n\n".join(partes)[:max_chars]
+def contexto(max_chars=MAX_KB_CHARS, objetivo="", cid=None, business_unit="", market="", language=""):
+    selection = json.loads(db.meta_get(f"commercial_selection_{cid}", "{}") or "{}") if cid else {}
+    business_unit = selection.get("business_unit", business_unit)
+    market = selection.get("market", market)
+    language = selection.get("language", language)
+    result = business_context.resolve(objective=objetivo, business_unit=business_unit, market=market, language=language, max_chars=max_chars)
+    kb = result["text"]
     imgs = [f.name for f in sorted(IMG_DIR.iterdir())
             if f.suffix.lower() in (".png", ".jpg", ".jpeg", ".gif", ".webp")]
     return kb, imgs
 
 
+def _snapshot_context(cid, kb, imgs, reuse=False):
+    key = f"commercial_context_{cid}"
+    old = json.loads(db.meta_get(key, "{}") or "{}")
+    if reuse and old.get("text"):
+        return old["text"], old.get("images", [])
+    import hashlib
+    version = hashlib.sha256(kb.encode()).hexdigest()
+    db.meta_set(f"commercial_context_snapshot_{cid}_{version}", json.dumps(
+        {"version": version, "text": kb, "images": imgs}, ensure_ascii=False))
+    db.meta_set(key, json.dumps({"version": version, "text": kb, "images": imgs}, ensure_ascii=False))
+    return kb, imgs
+
+
 def listar_contexto():
-    """Lista KBs/imagens; sincroniza skills e sementeia conhecimento ao abrir Contexto IA."""
-    syncs = sync_skill_kbs()
-    seeded = seed_skill_knowledge()
+    """Lista os arquivos legados sem alterar arquivos ou conhecimento."""
+    syncs = []
+    seeded = []
     kbs = []
     for f in sorted(KB_DIR.glob("*.md")):
         credit = _SKILL_KB_CREDITS.get(f.name) or {}
@@ -458,13 +463,13 @@ GUIA_HTML = """REGRAS DO HTML (inner_html = só o miolo; a moldura oficial shell
 
 def criar_template(briefing):
     sync_skill_kbs()
-    kb, imgs = contexto()
+    kb, imgs = contexto(objetivo=briefing)
     res = _ai_json(f"""Você é o copywriter da Yoobe (Time Yoobe). Crie UM template de email comercial.
 Devolva SOMENTE JSON válido, sem markdown:
 {{"nome": "nome curto do template", "assunto": "...",
  "assuntos_alternativos": ["curiosidade", "benefício/especificidade", "pergunta ou contraste"],
  "preheader": "...",
- "cta": "rótulo do botão", "cta_url": "url do CTA (Calendly/WhatsApp do contexto, ou vazio)",
+ "cta": "rótulo do botão", "cta_url": "URL comercial do negócio no contexto, ou vazio",
  "inner_html": "HTML do miolo", "texto_plano": "versão text/plain completa"}}
 
 {GUIA_HTML}
@@ -496,7 +501,7 @@ BRIEFING DA Yoobe: {briefing}""")
 def classificar_resposta(contato, historico, resposta):
     """Interpreta a resposta de um lead usando os KBs. A IA interpreta; o código decide.
     Devolve dict (classe, confiança, precisa_humano, resposta_sugerida, resumo) ou None."""
-    kb, _ = contexto()
+    kb, _ = contexto(objetivo=str(historico) + " " + str(resposta))
     prompt = f"""Você é o assistente comercial do Time Yoobe (Yoobe — plataforma de automação de marketing/vendas para empresas com programas de recompensas, RH, employee experience, vendas e plataformas SaaS).
 Um lead respondeu a um e-mail de campanha. Interprete e devolva SOMENTE um JSON válido, sem markdown:
 {{"classificacao": "pergunta_simples | agendar | interessado | objecao_preco | duvida_complexa | pediu_tempo | recusa_encerrar | outro",
@@ -509,7 +514,7 @@ Um lead respondeu a um e-mail de campanha. Interprete e devolva SOMENTE um JSON 
 REGRAS (NUNCA violar):
 - Responda SOMENTE com base no CONTEXTO (KBs) abaixo. Se a informação não estiver no contexto, defina precisa_humano=true e não invente.
 - PREÇO: use somente faixas/planos presentes no contexto e convide para uma call: {CALENDLY}. NUNCA invente valor fechado, desconto, prazo ou cláusula de contrato.
-- "agendar"/"interessado": pediu reunião/call ou demonstrou interesse claro → a resposta_sugerida deve oferecer o link do Calendly ({CALENDLY}).
+- "agendar"/"interessado": pediu reunião/call ou demonstrou interesse claro → a resposta_sugerida deve oferecer o canal comercial adequado ao negócio ({CALENDLY}).
 - "pergunta_simples": dúvida factual/técnica respondível pelo contexto (API, webhooks, fulfillment, gamificacao, carteiras, loja corporativa, governanca).
 - "objecao_preco" (achou caro/negociação), "duvida_complexa", "pediu_tempo", "outro" → precisa_humano=true.
 - Em qualquer ambiguidade, use confiança < 0.8.
@@ -792,7 +797,7 @@ ESTRATEGIA_FUNIL = {
             "- ROI concreto: números e premissas dos KBs, explicitando cada premissa; nunca retorno garantido.\n"
             "- Urgência honesta: janela real (ciclo de implantação, planejamento de trimestre), sem escassez fabricada.\n"
             "- Ataque a objeção final (preço, timing, aprovação interna) com resposta objetiva.\n"
-            "- CTA direto de demo/agenda (Calendly/WhatsApp) em TODOS os emails, sem rodeio.\n"
+            "- CTA direto adequado ao negócio (orçamento no Catálogo; conversa técnica na API; demonstração na Plataforma), sem rodeio.\n"
             "- Tom: direto e respeitoso do tempo do lead; emails mais curtos."),
         "cadencia": ("E1 dor já validada + ROI concreto com premissas, CTA de agenda → "
                      "E2 mecânica da solução e esforço real de implantação → "
@@ -853,7 +858,7 @@ Devolva SOMENTE JSON válido, sem markdown:
    "BENEFÍCIO ou ESPECIFICIDADE NUMÉRICA dos KBs",
    "PERGUNTA ou CONTRASTE/GUERRILHA"],
  "preheader": "...", "cta": "rótulo do botão",
- "cta_url": "url do CTA (Calendly/WhatsApp do contexto, ou vazio)",
+ "cta_url": "URL comercial do negócio no contexto, ou vazio",
  "inner_html": "HTML do miolo", "texto_plano": "versão text/plain completa"}}
 
 REGRA DOS ASSUNTOS: além do assunto principal, escreva EXATAMENTE 3 variantes com abordagens
@@ -1188,7 +1193,8 @@ def _build_worker(cid, objetivo, tipo, n_emails, cad_min, cad_max, kb, imgs, bri
         syncs = sync_skill_kbs()
         if syncs:
             # Recarrega KBs após sync (email-creative-builder / GTM) para o plano e a copy.
-            kb, imgs = contexto()
+            kb, imgs = contexto(objetivo=objetivo, cid=cid)
+        kb, imgs = _snapshot_context(cid, kb, imgs)
         agent_usage.set_run_context(campaign_id=int(cid), agent="estrategista",
                                     task_type="plano")
         _set_progress(cid, status="gerando", total=n_emails, feitos=0,
@@ -1264,7 +1270,7 @@ def _resume_worker(cid):
             raise RuntimeError("campanha não encontrada")
         objetivo = camp["objetivo"] or ""
         cad_min = camp["cad_min_dias"]
-        kb, imgs = contexto()
+        kb, imgs = _snapshot_context(cid, *contexto(objetivo=objetivo, cid=cid), reuse=True)
         resumo = db.resumo_audiencia(emails_aud)
         brief = _fmt_cohort(resumo, camp["audience_profile"] or "")
         prog = build_progress(cid) or {}
@@ -1413,7 +1419,7 @@ Devolva SOMENTE JSON válido, sem markdown:
 {{"assunto": "assunto principal ousado",
  "assuntos_alternativos": ["CURIOSIDADE", "BENEFÍCIO/ESPECIFICIDADE", "PERGUNTA ou CONTRASTE"],
  "preheader": "...", "cta": "rótulo do botão",
- "cta_url": "url do CTA (Calendly/WhatsApp do contexto, ou vazio)",
+ "cta_url": "URL comercial do negócio no contexto, ou vazio",
  "inner_html": "HTML do miolo", "texto_plano": "versão text/plain completa"}}
 
 NOVAS DIRETRIZES DO DONO DA CAMPANHA (prioridade máxima):
@@ -1553,7 +1559,7 @@ def _rewrite_worker(cid, diretrizes, ordens):
         objetivo = camp["objetivo"] or ""
         contexto_atual = camp["contexto"] or ""
         sync_skill_kbs()
-        kb, imgs = contexto()
+        kb, imgs = _snapshot_context(cid, *contexto(objetivo=objetivo, cid=cid))
         resumo = db.resumo_audiencia(emails_aud)
         brief = _fmt_cohort(resumo, camp["audience_profile"] or "")
         temperatura = ((build_progress(cid) or {}).get("temperatura")
@@ -1767,12 +1773,12 @@ def _sender_novas_campanhas(sender_id=None):
 
 def criar_campanha(objetivo, tipo="finita", cad_min=None, cad_max=None,
                    n_emails=3, segmentos=None, apenas_sem_resposta=True, tags=None, sender_id=None,
-                   inicio_em="", audience_profile=""):
+                   inicio_em="", audience_profile="", business_unit="", market="", language=""):
     """Cria a campanha NA HORA (rascunho) e gera os emails um a um em BACKGROUND (sem timeout).
     Acompanhe o progresso por build_progress(cid) / GET /api/campaigns/{cid} (campo 'build')."""
     sender_id = _sender_novas_campanhas(sender_id)
     sync_skill_kbs()
-    kb, imgs = contexto()
+    kb, imgs = contexto(objetivo=objetivo, business_unit=business_unit, market=market, language=language)
     n_emails = max(1, min(int(n_emails or 3), 20))
     # resolve o público ANTES (clientes auto-excluídos por resolve_audience) p/ o briefing do cohort
     segs = segmentos if segmentos else ["quente", "morno", "frio"]
@@ -1786,13 +1792,14 @@ def criar_campanha(objetivo, tipo="finita", cad_min=None, cad_max=None,
                  VALUES(?,?,?,'rascunho',?,?,?,?,?,?,?)""",
               (f"Gerando campanha… ({n_emails} e-mails)", objetivo, tipo, cad_min, cad_max,
                "A IA está redigindo os e-mails…", sender_id, inicio_em or "", audience_profile or "",
-               db.dashboard_env()))
+               db.campaign_origin()))
     cid = c.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
     for email in audiencia:
         c.execute("INSERT OR IGNORE INTO campaign_contacts(campaign_id,email) VALUES(?,?)", (cid, email))
     c.commit()
     c.close()
 
+    db.meta_set(f"commercial_selection_{cid}", json.dumps({"business_unit": business_unit, "market": market, "language": language}))
     _set_progress(cid, status="gerando", total=n_emails, feitos=0, etapa="iniciando…",
                   temperatura=temperatura, run_token=_novo_run_token())
     threading.Thread(target=_build_worker,
@@ -1812,7 +1819,7 @@ def criar_campanha_contato(email, objetivo, n_emails=3, sender_id=None, inicio_e
         raise ValueError("contato não encontrado")
     n_emails = max(1, min(int(n_emails or 3), 10))
     sync_skill_kbs()
-    kb, imgs = contexto()
+    kb, imgs = contexto(objetivo=objetivo)
     resumo = db.resumo_audiencia([email])
     brief = _fmt_cohort(resumo, "contato_individual")
     temperatura = resumo.get("temperatura_dominante") or (contato["segmento"] or "")
@@ -1822,7 +1829,7 @@ def criar_campanha_contato(email, objetivo, n_emails=3, sender_id=None, inicio_e
                  VALUES(?,?,'finita','rascunho',NULL,NULL,?,?,?,?,?)""",
               (f"Gerando campanha individual — {contato['empresa'] or contato['nome'] or email}",
                objetivo, "Campanha individual criada pela ficha do CRM", sender_id,
-               inicio_em or "", "contato_individual", db.dashboard_env()))
+               inicio_em or "", "contato_individual", db.campaign_origin()))
     cid = c.execute("SELECT last_insert_rowid() AS i").fetchone()["i"]
     c.execute("INSERT INTO campaign_contacts(campaign_id,email) VALUES(?,?)", (cid, email))
     c.commit()
@@ -1839,7 +1846,7 @@ def criar_campanha_contato(email, objetivo, n_emails=3, sender_id=None, inicio_e
 def gerar_briefing_ads(campanha, steps):
     """Briefing Google Ads espelhando uma campanha de email: estrutura pronta para colar
     no Ads (ou importar via CSV do Ads Editor). Nada é criado na conta — só rascunho local."""
-    kb, _ = contexto()
+    kb, _ = contexto(objetivo=campanha.get("objetivo", ""))
     slug = campanha.get("slug") or db.slugify(campanha.get("nome", "")) or f"c{campanha.get('id')}"
     emails = "\n".join(f"- etapa {s.get('ordem')}: {s.get('template_ref')}" for s in steps) or "—"
     res = _ai_json(f"""Você é o gestor de tráfego da Yoobe. Crie um briefing de campanha
@@ -1935,7 +1942,7 @@ def gerar_briefing_lancamento(cid):
     """UMA chamada de IA que consolida o que já foi decidido/persistido em um
     briefing de decisão. Persiste em meta briefing_{cid} e devolve o JSON."""
     camp, steps, emails_aud, prog, critica = _dados_campanha_para_briefing(cid)
-    kb, _ = contexto()
+    kb, _ = contexto(objetivo=camp.get("objetivo", ""))
     resumo = db.resumo_audiencia(emails_aud)
     brief_cohort = _fmt_cohort(resumo, camp.get("audience_profile") or "")
     plano = prog.get("plano_emails") or []
@@ -2413,7 +2420,7 @@ def sugerir_campanhas(max_campanhas=5):
     Persiste o portfólio em meta e devolve o status final. Não gera nada ainda."""
     max_campanhas = max(1, min(int(max_campanhas or 5), 8))
     sincronizados = sync_skill_kbs()
-    kb, _ = contexto(MAX_KB_PORTFOLIO)
+    kb = "\n\n".join(business_context.resolve(business_unit=unit)["text"] for unit in business_context.UNITS)
     _suggest_set(status="gerando", etapa="analisando cohorts do CRM…", erro="",
                  campanhas=[], criadas=[], skills_sincronizados=sincronizados)
     brief = _briefing_cohorts()

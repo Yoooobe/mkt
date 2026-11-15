@@ -35,6 +35,7 @@ proposals/*.html
 proposals/sent_log.txt
 bases_leads/
 samples/
+dashboard/context/images/
 
 # Irrelevantes para a imagem
 tracking-worker/

@@ -187,9 +187,13 @@ def _gws(args, body=None, home=None):
     env = None
     if home:
         import os
+        Path(home).mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
         env["HOME"] = home
         env["GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND"] = "file"
+        if db.dashboard_env() == "operacional":
+            import gmail_oauth
+            env["GOOGLE_WORKSPACE_CLI_TOKEN"] = gmail_oauth.access_token_for_home(home)
     out = subprocess.run(cmd, capture_output=True, text=True, timeout=90, env=env)
     try:
         return json.loads(out.stdout)
@@ -256,7 +260,11 @@ def sender_auth_status(sender):
     (ex.: 403 de projeto GCP aparece aqui, não na hora do disparo)."""
     home = gws_home(sender)
     if home is not None and not (Path(home) / ".config" / "gws" / "credentials.enc").exists():
-        return {"conectado": False, "motivo": "perfil ainda não criado/logado", "conta_real": ""}
+        if db.dashboard_env() != "operacional":
+            return {"conectado": False, "motivo": "perfil ainda não criado/logado", "conta_real": ""}
+        import gmail_oauth
+        if not gmail_oauth.has_credentials(sender["id"]):
+            return {"conectado": False, "motivo": "Gmail ainda não autorizado no painel remoto", "conta_real": ""}
 
     def _probe():
         try:

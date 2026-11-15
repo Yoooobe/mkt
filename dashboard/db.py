@@ -350,11 +350,17 @@ def campaign_slug(campaign_id):
 
 
 def dashboard_env():
-    """Identidade do ambiente: local (Mac/LaunchAgent) ou remoto (Cloudflare Container)."""
+    """Identidade do ambiente: local, operacional (Cloudflare) ou espelho remoto."""
     v = (os.environ.get("DASHBOARD_ENV") or "local").strip().lower()
     if v in ("remoto", "remote", "cloud", "container"):
         return "remoto"
+    if v in ("operacional", "production", "prod"):
+        return "operacional"
     return "local"
+
+
+def campaign_origin():
+    return "remoto" if dashboard_env() == "operacional" else dashboard_env()
 
 
 def init():
@@ -414,7 +420,7 @@ def init():
     pcols = {r["name"] for r in c.execute("PRAGMA table_info(campaigns)")}
     if "origem_ambiente" not in pcols:
         # Bancos existentes neste host: assumir origem = ambiente atual (Mac → local).
-        default_origem = dashboard_env()
+        default_origem = campaign_origin()
         c.execute(
             f"ALTER TABLE campaigns ADD COLUMN origem_ambiente TEXT DEFAULT '{default_origem}'"
         )

@@ -7,7 +7,7 @@
 <link rel="icon" href="/favicon.ico">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800&family=DM+Sans:wght@400;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css?v=20261109-yoobe-local">
+<link rel="stylesheet" href="/static/style.css?v=20261115-yoobe-remote">
 <script defer src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
 </head>
 <body>
@@ -51,6 +51,11 @@
   <div class="field"><label>Remetente (de qual conta sai a campanha)</label>
     <select id="nc-sender" style="width:100%"><option>carregando…</option></select>
     <small class="muted" id="nc-sender-hint"></small></div>
+  <div class="row">
+    <div class="field"><label>Negócio</label><select id="nc-business"><option value="catalogo">Catálogo — kits e brindes</option><option value="corporate_platform">Corporate — plataforma</option><option value="corporate_api">Corporate — API</option></select></div>
+    <div class="field"><label>Mercado</label><select id="nc-market"><option value="br">Brasil</option><option value="international_with_brazil_team">Internacional com time no Brasil</option></select></div>
+    <div class="field"><label>Idioma</label><select id="nc-language"><option value="pt-BR">Português</option><option value="en">English</option></select></div>
+  </div>
   <div class="field" id="nc-objetivo-field"><label>Objetivo da campanha</label>
     <textarea id="nc-objetivo" rows="3" placeholder="Ex.: nutrir os leads frios de 2023-24 com cases e fechar reuniões no Calendly"></textarea></div>
   <div class="row">
@@ -207,6 +212,6 @@
 
 <script>window.API_KEY = "__API_KEY__";</script>
 <!-- Versão no URL evita que o navegador reaproveite uma tela antiga após atualizações locais. -->
-<script src="/static/app.js?v=20261109-yoobe-local"></script>
+<script src="/static/app.js?v=20261115-yoobe-remote"></script>
 </body>
 </html>
