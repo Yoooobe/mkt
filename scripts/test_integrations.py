@@ -157,6 +157,39 @@ class IntegrationTests(unittest.TestCase):
         after = [len(q(f"SELECT * FROM {t}")) for t in ("campaigns", "campaign_contacts", "queue", "sends")]
         self.assertEqual(before, after)
 
+    def test_busca_aplica_confirma_e_rejeita_com_erro(self):
+        good = event()
+        bad = event(event_id="catalogo:budget:8:x", type="catalog.desconhecido")
+        calls = []
+
+        def http(method, url, body=None):
+            calls.append((method, url, json.loads(body) if body else None))
+            if method == "GET":
+                return {"events": [
+                    {"event_id": "catalogo:budget:7:quote_requested", "body": good.decode(), "signature": sign(good)},
+                    {"event_id": "catalogo:budget:7:quote_requested", "body": good.decode(), "signature": sign(good)},
+                    {"event_id": "catalogo:budget:8:x", "body": bad.decode(), "signature": sign(bad)},
+                    {"event_id": "catalogo:budget:9:y", "body": good.decode(), "signature": "t=1,v1=00"},
+                ]}
+            return {"sent": 2, "failed": 2}
+
+        res = integrations.pull_once(db.conn, "https://cat.test/api/integrations/marketing/events/",
+                                     SECRET, db.tags_str, http=http)
+        self.assertEqual((res["recebidos"], res["novos"], res["duplicados"], res["rejeitados"]), (4, 1, 1, 2))
+        self.assertEqual(calls[0][1], "https://cat.test/api/integrations/marketing/events?limit=50")
+        self.assertEqual(calls[1][1], "https://cat.test/api/integrations/marketing/events/ack")
+        acks = calls[1][2]["results"]
+        self.assertEqual([a["ok"] for a in acks], [True, True, False, False])
+        self.assertEqual(acks[2]["error"], "tipo_desconhecido")
+        self.assertEqual(acks[3]["error"], "assinatura_invalida")
+        self.assertEqual(len(q("SELECT * FROM opportunities")), 1)
+
+    def test_busca_vazia_nao_confirma(self):
+        calls = []
+        integrations.pull_once(db.conn, "https://cat.test/e", SECRET, db.tags_str,
+                               http=lambda m, u, b=None: calls.append(m) or {"events": []})
+        self.assertEqual(calls, ["GET"])
+
 
 if __name__ == "__main__":
     try:

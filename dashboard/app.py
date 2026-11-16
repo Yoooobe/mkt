@@ -91,19 +91,19 @@ def _guard_campaign_create():
 def _campaign_sender(sender_id=None):
     sender = db.sender_default()
     if not sender:
-        return JSONResponse({"erro": "Cadastre e conecte genau@yoobe.co antes de criar campanhas."},
+        return JSONResponse({"erro": f"Cadastre e conecte {db.CAMPAIGN_SENDER_EMAIL} antes de criar campanhas."},
                             status_code=409)
     if sender_id is not None and int(sender_id) != int(sender["id"]):
-        return JSONResponse({"erro": "Novas campanhas só podem usar o remetente genau@yoobe.co."},
+        return JSONResponse({"erro": f"Novas campanhas só podem usar o remetente {db.CAMPAIGN_SENDER_EMAIL}."},
                             status_code=409)
     return sender
 
 
 def _campaign_sender_guard(camp):
     sender = db.sender_get(camp["sender_id"] or 0) if camp else None
-    if not sender or (sender.get("email") or "").strip().lower() != "genau@yoobe.co":
+    if not db.is_campaign_sender(sender):
         return JSONResponse({"erro": "Campanhas antigas com remetente legado não podem voltar a enviar. "
-                             "Crie uma nova campanha com genau@yoobe.co."}, status_code=409)
+                             f"Crie uma nova campanha com {db.CAMPAIGN_SENDER_EMAIL}."}, status_code=409)
     return None
 
 
@@ -414,6 +414,32 @@ def _quarantine_stale_bg_jobs():
     return cleared
 
 
+def _catalog_events_loop():
+    """Busca os eventos comerciais do Catálogo a cada CATALOG_EVENTS_PULL_SEC (padrão 300 s).
+    Só no Mac (dono do CRM): o remoto é sobrescrito pelo sync e não confirma eventos."""
+    import integrations
+    url = vertex.env_get("CATALOG_EVENTS_PULL_URL", "")
+    secret = vertex.env_get("CATALOG_EVENTS_SECRET", "")
+    every = max(60, int(vertex.env_get("CATALOG_EVENTS_PULL_SEC", "300") or 300))
+    while True:
+        try:
+            res = integrations.pull_once(db.conn, url, secret, db.tags_str)
+            if res.get("recebidos"):
+                engine.log(f"catálogo: eventos {res}")
+        except Exception as e:
+            engine.log(f"catálogo: busca de eventos falhou: {type(e).__name__}")
+        time.sleep(every)
+
+
+def ensure_catalog_events_loop():
+    if db.dashboard_env() == "remoto":
+        return
+    if not (vertex.env_get("CATALOG_EVENTS_PULL_URL", "") and vertex.env_get("CATALOG_EVENTS_SECRET", "")):
+        return
+    threading.Thread(target=_catalog_events_loop, daemon=True).start()
+    engine.log("loop de eventos do Catálogo iniciado")
+
+
 @app.on_event("startup")
 def startup():
     # Só o mínimo para a API responder — catch-up pesado vai em background.
@@ -440,6 +466,7 @@ def startup():
     seed.seed_tags()
     db.migrar_tags_agendamento()  # 'agendou' antigo (intenção) → 'pediu_agendamento'
     threading.Thread(target=_startup_catchup, daemon=True).start()
+    ensure_catalog_events_loop()
 
 
 # ---------------- contatos / CRM ----------------
@@ -2007,7 +2034,7 @@ def campaign_edit(cid: int, body: EditarCampanha):
     c.close()
     if current and int(body.sender_id) != int(current["sender_id"] or 0):
         return JSONResponse({"erro": "O remetente de uma campanha existente não pode ser alterado. "
-                             "Crie uma nova campanha para usar genau@yoobe.co."}, status_code=409)
+                             f"Crie uma nova campanha para usar {db.CAMPAIGN_SENDER_EMAIL}."}, status_code=409)
     nome, objetivo = body.nome.strip(), body.objetivo.strip()
     if not nome or not objetivo:
         return JSONResponse({"erro": "nome e objetivo são obrigatórios"}, status_code=422)
@@ -2987,7 +3014,7 @@ def senders_list():
     c = db.conn()
     rows = [dict(r) for r in c.execute("SELECT * FROM senders ORDER BY id").fetchall()]
     for s in rows:
-        s["para_campanha_nova"] = (s.get("email") or "").strip().lower() == "genau@yoobe.co"
+        s["para_campanha_nova"] = db.is_campaign_sender(s)
         st = engine.sender_auth_status(s)
         s["conectado"], s["status_motivo"] = st["conectado"], st["motivo"]
         s["auto_reply_on"] = s["auto_reply"] == "on"
@@ -3092,8 +3119,8 @@ class SenderCreate(BaseModel):
 def sender_create(payload: SenderCreate):
     """Cadastra um remetente novo, sempre desconectado e com perfil GWS isolado."""
     email = payload.email.strip().lower()
-    if email != "genau@yoobe.co":
-        return JSONResponse({"erro": "O único remetente de campanhas é genau@yoobe.co."},
+    if email != db.CAMPAIGN_SENDER_EMAIL:
+        return JSONResponse({"erro": f"O único remetente de campanhas é {db.CAMPAIGN_SENDER_EMAIL}."},
                             status_code=409)
     if not re.fullmatch(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", email):
         return JSONResponse({"erro": "informe um e-mail válido"}, status_code=422)

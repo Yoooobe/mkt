@@ -221,3 +221,36 @@ def ingest(c, body: bytes, signature: str, secret: str, tags_str, now=None) -> d
         c.execute("ROLLBACK")
         raise
     return {"ok": True, "duplicate": False, "opportunity_id": opp, "contato": contact}
+
+
+def pull_once(conn_factory, url, secret, tags_str, http=None, limit=50):
+    """Modo de busca: pede ao Catálogo os eventos prontos, aplica cada um com `ingest` e
+    confirma em /ack. Rejeição de contrato (4xx) também confirma com erro, para o Catálogo
+    reentregar com backoff e desistir depois; falha de rede não confirma (volta à fila)."""
+    import urllib.request
+    if http is None:
+        def http(method, u, body=None):
+            req = urllib.request.Request(u, data=body, method=method, headers={
+                "authorization": f"Bearer {secret}", "content-type": "application/json",
+                "user-agent": "yoobe-mail-integration/1"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return json.loads(r.read().decode("utf-8") or "{}")
+    base = url.rstrip("/")
+    got = http("GET", f"{base}?limit={int(limit)}")
+    results, out = [], {"recebidos": 0, "novos": 0, "duplicados": 0, "rejeitados": 0}
+    for ev in got.get("events") or []:
+        out["recebidos"] += 1
+        c = conn_factory()
+        try:
+            res = ingest(c, ev.get("body", "").encode("utf-8"), ev.get("signature", ""),
+                         secret, tags_str)
+            out["duplicados" if res["duplicate"] else "novos"] += 1
+            results.append({"event_id": ev.get("event_id"), "ok": True})
+        except Rejected as e:
+            out["rejeitados"] += 1
+            results.append({"event_id": ev.get("event_id"), "ok": False, "error": e.code})
+        finally:
+            c.close()
+    if results:
+        out["ack"] = http("POST", f"{base}/ack", json.dumps({"results": results}).encode())
+    return out
