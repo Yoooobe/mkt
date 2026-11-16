@@ -93,7 +93,7 @@ def seed_campanha_reativacao():
 
 
 SENDERS = [
-    ("vendas@yoobe.co", "Yoobe", "Campanhas Yoobe", "vendas", "off"),
+    ("genau@yoobe.co", "Yoobe", "Campanhas Yoobe", "genau", "off"),
 ]
 
 
