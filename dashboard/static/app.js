@@ -4015,7 +4015,7 @@ async function vMidia() {
           <div class="field"><label>Mídia</label><input id="gm-medium" value="cpc" style="width:90px"></div></div>
         <button id="gm-utm">Gerar URL</button><div class="utm-output" id="gm-utm-out">—</div>
         <h3 style="margin-top:22px">Autorização OAuth</h3>
-        <p class="muted">A credencial atual precisa ser reautorizada com escopos de mídia. Rode no Terminal e conclua no navegador:</p>
+        <p class="muted">GA4 e Tag Manager usam a credencial de serviço já configurada. Use o comando abaixo apenas se quiser autorizar outra conta Google para essas leituras:</p>
         <code class="media-command">${esc(s.oauth_comando)}</code>
         <p class="muted" style="margin-top:10px">${esc(s.ads_nota || "")}</p>
       </div>
@@ -4065,7 +4065,7 @@ async function vMidia() {
       const r = await api("/api/google-media/ga4-resources");
       if (!r.propriedades.length) { box.innerHTML = '<span class="muted">Nenhuma propriedade GA4 acessível nesta conta.</span>'; return; }
       box.innerHTML = r.propriedades.map(p => `<div class="media-metric"><b>${esc(p.nome)}</b> <small class="muted">Property ${esc(p.id)} · conta ${esc(p.account)}</small><br>
-        ${(p.streams || []).map(s => `<button class="green" onclick="usarGa4('${esc(p.id)}','${esc(s.measurement_id)}')">Usar ${esc(s.nome || s.measurement_id)} · ${esc(s.measurement_id || "sem Measurement ID")}</button>`).join(" ") || '<small class="muted">Sem stream web visível.</small>'}</div>`).join("");
+        ${(p.streams || []).map(s => `<button class="green" onclick="usarGa4('${esc(p.account_id)}','${esc(p.id)}','${esc(s.measurement_id)}')">Usar ${esc(s.nome || s.measurement_id)} · ${esc(s.measurement_id || "sem Measurement ID")}</button>`).join(" ") || '<small class="muted">Sem stream web visível.</small>'}</div>`).join("");
     } catch (e) { box.innerHTML = `<span class="form-feedback error">${esc(e.message)}</span>`; }
   };
   document.getElementById("gm-discover-gtm").onclick = async () => {
@@ -4086,7 +4086,8 @@ async function vMidia() {
   document.getElementById("gm-sync").click();
 }
 
-function usarGa4(propertyId, measurementId) {
+function usarGa4(accountId, propertyId, measurementId) {
+  document.getElementById("gm-ga4-account").value = accountId;
   document.getElementById("gm-ga4").value = propertyId;
   document.getElementById("gm-measurement").value = measurementId;
   toast("GA4 selecionado — clique em Salvar integração", 3000);

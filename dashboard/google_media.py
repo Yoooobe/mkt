@@ -192,7 +192,8 @@ def ga4_resources():
                                for x in s.get("dataStreams", []) if x.get("type") == "WEB_DATA_STREAM"]
                 except Exception:
                     pass
-            out.append({"account": account.get("displayName", ""), "id": pid,
+            out.append({"account": account.get("displayName", ""),
+                        "account_id": _digits(account.get("account", "")), "id": pid,
                         "nome": prop.get("displayName", ""), "streams": streams})
     return {"propriedades": out}
 
