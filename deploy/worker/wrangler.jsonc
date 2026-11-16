@@ -13,10 +13,8 @@
   "containers": [
     {
       "class_name": "DashboardContainer",
-      // Dockerfile fica em deploy/, mas o contexto de build é a raiz do repo
-      // (precisa de dashboard/ e proposals/). Caminhos relativos a este arquivo.
-      "image": "../Dockerfile",
-      "image_build_context": "../..",
+      // Imagem já publicada no registry da Cloudflare; evita depender do Docker local.
+      "image": "registry.cloudflare.com/d0b51520d7b3935a9c3801ba7685afab/gws4unik-dashboard-dashboardcontainer@sha256:878aadc15a4e87697dcaf484207052207c6b6c12d0f9a2bbf37b30abc4447931",
       // SQLite = 1 escritor. NUNCA aumente: duas instâncias replicando o mesmo
       // caminho no R2 corrompem a réplica do Litestream.
       "max_instances": 1,
