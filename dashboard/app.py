@@ -152,8 +152,14 @@ def _guard_improvement_task_mutation(tid: int):
     return _guard_campaign_mutation(int(row["campaign_id"]))
 
 
+INTEGRATION_EVENTS_PATH = "/api/integrations/events"
+
+
 @app.middleware("http")
 async def auth(request: Request, call_next):
+    # Eventos do Catálogo autenticam por assinatura HMAC (sem X-API-Key do painel).
+    if request.url.path == INTEGRATION_EVENTS_PATH:
+        return await call_next(request)
     if request.url.path.startswith("/api/") and request.headers.get("X-API-Key") != API_KEY:
         return JSONResponse({"erro": "X-API-Key inválida (veja dashboard/.env)"}, status_code=401)
     return await call_next(request)
@@ -1433,6 +1439,41 @@ def leads_evidence(b: LeadEvidenceBody, request: Request):
         return JSONResponse({"erro": str(e)[:260]}, status_code=502)
     return {"ok": True, "email": email, "status": res.get("status"),
             "motivo": res.get("motivo", "")}
+
+
+# ---------------- integrações (Catálogo) ----------------
+
+@app.post(INTEGRATION_EVENTS_PATH)
+async def integration_events(request: Request):
+    """Recebe eventos da outbox do Catálogo: assinatura HMAC, idempotente por event_id.
+    Só registra comprador e oportunidade; não envia, não ativa e não inclui em campanha."""
+    import integrations
+    body = await request.body()
+    if len(body) > 64_000:
+        return JSONResponse({"erro": "payload_grande"}, status_code=413)
+    c = db.conn()
+    try:
+        res = integrations.ingest(c, body, request.headers.get("x-yoobe-signature", ""),
+                                  vertex.env_get("CATALOG_EVENTS_SECRET", ""), db.tags_str)
+    except integrations.Rejected as e:
+        return JSONResponse({"erro": e.code}, status_code=e.status)
+    finally:
+        c.close()
+    return JSONResponse(res, status_code=200 if res["duplicate"] else 202)
+
+
+@app.get("/api/opportunities")
+def opportunities_list(business_unit: str = "", limit: int = 100):
+    """Oportunidades vindas do Catálogo (sem dados de destinatários)."""
+    import integrations
+    c = db.conn()
+    integrations.ensure_schema(c)
+    q, args = "SELECT * FROM opportunities", []
+    if business_unit:
+        q, args = q + " WHERE business_unit=?", [business_unit]
+    rows = c.execute(q + " ORDER BY updated_at DESC LIMIT ?", args + [max(1, min(limit, 500))]).fetchall()
+    c.close()
+    return {"oportunidades": [dict(r) for r in rows]}
 
 
 # ---------------- templates ----------------

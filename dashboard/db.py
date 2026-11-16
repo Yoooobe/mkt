@@ -366,6 +366,8 @@ def campaign_origin():
 def init():
     c = conn()
     c.executescript(SCHEMA)
+    import integrations  # eventos do Catálogo: integration_events + opportunities
+    integrations.ensure_schema(c)
     # migração idempotente: bancos antigos não têm sends.track_id / contacts.tags
     cols = {r["name"] for r in c.execute("PRAGMA table_info(sends)")}
     if "track_id" not in cols:
