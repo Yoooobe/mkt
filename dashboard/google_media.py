@@ -247,33 +247,33 @@ def ensure_ga4_key_events(event_names=GA4_ACQUISITION_EVENTS):
             "metas": list(event_names)}
 
 
-def gtm_summary():
+def gtm_summary(days=30):
     e = _env(); account = _digits(e.get("GOOGLE_GTM_ACCOUNT_ID")); container = _digits(e.get("GOOGLE_GTM_CONTAINER_ID"))
     if not account or not container:
         raise RuntimeError("Informe Account ID e Container ID do Google Tag Manager.")
-    base = f"https://tagmanager.googleapis.com/tagmanager/v2/accounts/{account}/containers/{container}"
+    base = f"https://tagmanager.googleapis.com/tagmanager/v1/accounts/{account}/containers/{container}"
     token = _gtm_read_token()
-    tags = _request(base + "/tags", access_token=token).get("tag", [])
-    triggers = _request(base + "/triggers", access_token=token).get("trigger", [])
+    tags = _request(base + "/tags", access_token=token).get("tags", [])
+    triggers = _request(base + "/triggers", access_token=token).get("triggers", [])
     return {"tags": len(tags), "triggers": len(triggers), "container": container}
 
 
 def gtm_resources():
     """Lista contas e containers GTM acessíveis, sem editar nada."""
     token = _gtm_read_token()
-    data = _request("https://tagmanager.googleapis.com/tagmanager/v2/accounts", access_token=token)
+    data = _request("https://tagmanager.googleapis.com/tagmanager/v1/accounts", access_token=token)
     contas = []
-    for account in data.get("account", []):
-        aid = _digits(account.get("path", ""))
+    for account in data.get("accounts", []):
+        aid = _digits(account.get("accountId", ""))
         if not aid:
             continue
         containers = _request(
-            f"https://tagmanager.googleapis.com/tagmanager/v2/accounts/{aid}/containers",
+            f"https://tagmanager.googleapis.com/tagmanager/v1/accounts/{aid}/containers",
             access_token=token,
-        ).get("container", [])
+        ).get("containers", [])
         contas.append({
             "id": aid, "nome": account.get("name", ""),
-            "containers": [{"id": _digits(x.get("path", "")), "nome": x.get("name", ""),
+            "containers": [{"id": _digits(x.get("containerId", "")), "nome": x.get("name", ""),
                             "public_id": x.get("publicId", "")}
                            for x in containers],
         })
