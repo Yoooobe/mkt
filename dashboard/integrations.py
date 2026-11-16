@@ -227,14 +227,15 @@ def pull_once(conn_factory, url, secret, tags_str, http=None, limit=50):
     """Modo de busca: pede ao Catálogo os eventos prontos, aplica cada um com `ingest` e
     confirma em /ack. Rejeição de contrato (4xx) também confirma com erro, para o Catálogo
     reentregar com backoff e desistir depois; falha de rede não confirma (volta à fila)."""
-    import urllib.request
     if http is None:
+        import requests  # certifi: o Python.org do macOS não usa a cadeia do sistema
+
         def http(method, u, body=None):
-            req = urllib.request.Request(u, data=body, method=method, headers={
+            r = requests.request(method, u, data=body, timeout=20, headers={
                 "authorization": f"Bearer {secret}", "content-type": "application/json",
                 "user-agent": "yoobe-mail-integration/1"})
-            with urllib.request.urlopen(req, timeout=20) as r:
-                return json.loads(r.read().decode("utf-8") or "{}")
+            r.raise_for_status()
+            return r.json() if r.content else {}
     base = url.rstrip("/")
     got = http("GET", f"{base}?limit={int(limit)}")
     results, out = [], {"recebidos": 0, "novos": 0, "duplicados": 0, "rejeitados": 0}
