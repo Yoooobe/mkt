@@ -96,6 +96,8 @@ def status():
                 "property_id": _digits(e.get("GOOGLE_GA4_PROPERTY_ID", "")),
                 "measurement_id": e.get("GOOGLE_GA4_MEASUREMENT_ID", ""),
                 "site_measurement_id": e.get("GOOGLE_GA4_SITE_MEASUREMENT_ID", "")},
+        "gtm": {"account_id": _digits(e.get("GOOGLE_GTM_ACCOUNT_ID", "")),
+                "container_id": _digits(e.get("GOOGLE_GTM_CONTAINER_ID", ""))},
         "tags": {"google_tag_id": e.get("GOOGLE_TAG_ID", ""),
                  "ads_tag_id": e.get("GOOGLE_ADS_TAG_ID", "")},
         "ga4_pronto": cfg["GOOGLE_GA4_PROPERTY_ID"],

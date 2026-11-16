@@ -4000,8 +4000,8 @@ async function vMidia() {
         <div class="field"><label>GA4 Measurement ID — catalogo.yoobe.co</label><input id="gm-site-measurement" value="${esc(s.ga4?.site_measurement_id || "")}" placeholder="ex.: G-XXXXXXXXXX" style="width:100%"></div>
         <div class="field"><label>Google tag ID</label><input id="gm-google-tag" value="${esc(s.tags?.google_tag_id || "")}" placeholder="ex.: GT-XXXXXXX" style="width:100%"><small class="muted">Identificação de tag do site; não substitui o Container ID do GTM.</small></div>
         <div class="field"><label>Google Ads tag ID</label><input id="gm-ads-tag" value="${esc(s.tags?.ads_tag_id || "")}" placeholder="ex.: AW-XXXXXXXXX" style="width:100%"><small class="muted">Tag de conversão; não substitui Customer ID nem Developer Token do Ads.</small></div>
-        <div class="field"><label>GTM Account ID</label><input id="gm-gtm-account" placeholder="ex.: 12345678" style="width:100%"></div>
-        <div class="field"><label>GTM Container ID</label><input id="gm-gtm-container" placeholder="ex.: 12345678" style="width:100%"></div>
+        <div class="field"><label>GTM Account ID</label><input id="gm-gtm-account" value="${esc(s.gtm?.account_id || "")}" placeholder="ex.: 12345678" style="width:100%"></div>
+        <div class="field"><label>GTM Container ID</label><input id="gm-gtm-container" value="${esc(s.gtm?.container_id || "")}" placeholder="ex.: 12345678" style="width:100%"></div>
         <div class="field"><label>Google Ads Customer ID</label><input id="gm-ads-customer" placeholder="ex.: 123-456-7890" style="width:100%"></div>
         <div class="field"><label>Login Customer ID (MCC, se houver)</label><input id="gm-ads-login" placeholder="opcional" style="width:100%"></div>
         <div class="field"><label>Developer Token Google Ads</label><input id="gm-ads-token" type="password" placeholder="já cadastrado fica oculto" style="width:100%"></div>
