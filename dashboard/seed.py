@@ -93,7 +93,8 @@ def seed_campanha_reativacao():
 
 
 SENDERS = [
-    ("genau@yoobe.co", "Yoobe", "Campanhas Yoobe", "genau", "off"),
+    # vendas@ é alias de contact@: usa o mesmo perfil Gmail (slug contact).
+    ("vendas@yoobe.co", "Yoobe", "Campanhas Yoobe", "contact", "off"),
     ("contact@yoobe.co", "Yoobe Contato", "Caixa corporativa para CRM e respostas", "contact", "off"),
 ]
 

@@ -725,8 +725,8 @@ def sender_get(sid):
 
 
 # Remetente único das campanhas novas (alias) e a caixa Gmail que o autoriza e recebe as respostas.
-CAMPAIGN_SENDER_EMAIL = (os.environ.get("CAMPAIGN_SENDER_EMAIL") or "genau@yoobe.co").strip().lower()
-CAMPAIGN_SENDER_ACCOUNT = (os.environ.get("CAMPAIGN_SENDER_ACCOUNT") or "genau@yoobe.co").strip().lower()
+CAMPAIGN_SENDER_EMAIL = (os.environ.get("CAMPAIGN_SENDER_EMAIL") or "vendas@yoobe.co").strip().lower()
+CAMPAIGN_SENDER_ACCOUNT = (os.environ.get("CAMPAIGN_SENDER_ACCOUNT") or "contact@yoobe.co").strip().lower()
 
 
 def is_campaign_sender(sender):

@@ -292,7 +292,20 @@ def sender_auth_status(sender):
     if conta_real != esperado:
         return {"conectado": False, "conta_real": conta_real,
                 "motivo": f"logado como {conta_real} — conecte a conta certa"}
+    alias = (sender.get("email") or "").strip().lower()
+    if alias != conta_real and not _pode_enviar_como(alias, home):
+        return {"conectado": False, "conta_real": conta_real,
+                "motivo": f"{alias} não está em 'Enviar e-mail como' de {conta_real}"}
     return {"conectado": True, "motivo": "ok", "conta_real": conta_real}
+
+
+def _pode_enviar_como(alias, home):
+    """Alias verificado em sendAs da caixa; sem isso o Gmail reescreve o From."""
+    r = _gws(["users", "settings", "sendAs", "list", "--params", '{"userId":"me"}'], home=home) or {}
+    for s in r.get("sendAs") or []:
+        if (s.get("sendAsEmail") or "").strip().lower() == alias:
+            return bool(s.get("isPrimary")) or s.get("verificationStatus", "accepted") == "accepted"
+    return False
 
 
 # ---------------- login OAuth pelo dashboard (link clicável/copiável) ----------------
@@ -343,7 +356,7 @@ def iniciar_login(sid):
         detalhe = "\n".join(info["linhas"])[-400:] or "o gws não devolveu a URL de login"
         return {"ok": False, "erro": detalhe}
     return {"ok": True, "url": info["url"], "email": s["email"],
-            "nota": (f"Abra o link NESTA máquina e autorize como {s['email']}. "
+            "nota": (f"Abra o link NESTA máquina e autorize como {db.sender_account(s)}. "
                      "Depois clique em Verificar.")}
 
 
