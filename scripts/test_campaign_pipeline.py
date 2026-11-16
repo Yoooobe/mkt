@@ -65,7 +65,7 @@ _cancel = ai._geracao_cancelada
 ai._geracao_cancelada = lambda cid: bool(REWRITE_KB) or _cancel(cid)
 
 c = db.conn()
-c.execute("INSERT INTO senders(email, nome) VALUES('genau@yoobe.co','Genau')")
+c.execute("INSERT INTO senders(email, nome) VALUES('vendas@yoobe.co','Yoobe')")
 for i, seg in enumerate(["quente", "morno", "frio"]):
     c.execute("INSERT INTO contacts(email, nome, segmento) VALUES(?,?,?)", (f"p{i}@empresa.test", f"P{i}", seg))
 c.commit()

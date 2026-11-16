@@ -1765,9 +1765,9 @@ def reescrever_campanha(cid, diretrizes, ordens=None):
 def _sender_novas_campanhas(sender_id=None):
     sender = db.sender_default()
     if not sender:
-        raise RuntimeError("Cadastre genau@yoobe.co antes de criar campanhas.")
+        raise RuntimeError(f"Cadastre {db.CAMPAIGN_SENDER_EMAIL} antes de criar campanhas.")
     if sender_id is not None and int(sender_id) != int(sender["id"]):
-        raise ValueError("Novas campanhas só podem usar genau@yoobe.co.")
+        raise ValueError(f"Novas campanhas só podem usar {db.CAMPAIGN_SENDER_EMAIL}.")
     return int(sender["id"])
 
 

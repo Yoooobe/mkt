@@ -24,6 +24,18 @@ _SCOPES = [
 ]
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
 _PROFILE_URL = "https://gmail.googleapis.com/gmail/v1/users/me/profile"
+_SEND_AS_URL = "https://gmail.googleapis.com/gmail/v1/users/me/settings/sendAs"
+
+
+def _can_send_as(access_token, alias):
+    """O alias está em 'Enviar e-mail como' da conta e verificado (senão o Gmail reescreve o From)."""
+    r = requests.get(_SEND_AS_URL, headers={"Authorization": f"Bearer {access_token}"}, timeout=20)
+    if not r.ok:
+        return False
+    for item in r.json().get("sendAs") or []:
+        if (item.get("sendAsEmail") or "").strip().lower() == alias:
+            return item.get("isPrimary") or item.get("verificationStatus", "accepted") == "accepted"
+    return False
 
 
 def _env():
@@ -88,8 +100,8 @@ def has_credentials(sid):
 
 def begin(sid):
     sender = db.sender_get(sid)
-    if not sender or (sender.get("email") or "").strip().lower() != "genau@yoobe.co":
-        raise ValueError("OAuth remoto está liberado somente para genau@yoobe.co.")
+    if not db.is_campaign_sender(sender):
+        raise ValueError(f"OAuth remoto está liberado somente para {db.CAMPAIGN_SENDER_EMAIL}.")
     client_id, _, redirect_uri = _client()
     _fernet()
     state = secrets.token_urlsafe(32)
@@ -106,7 +118,7 @@ def begin(sid):
         "access_type": "offline",
         "prompt": "consent",
         "include_granted_scopes": "true",
-        "login_hint": sender["email"],
+        "login_hint": db.sender_account(sender),
         "state": state,
     })
     return "https://accounts.google.com/o/oauth2/v2/auth?" + query
@@ -128,7 +140,7 @@ def complete(code, state):
         raise ValueError("Link de autorização expirado. Gere um novo no painel.")
     sid = int(pending["sid"])
     sender = db.sender_get(sid)
-    if not sender or (sender.get("email") or "").strip().lower() != "genau@yoobe.co":
+    if not db.is_campaign_sender(sender):
         raise ValueError("O remetente não está autorizado para esta conexão.")
     db.meta_set("gmail_oauth_pending", "")
     client_id, client_secret, redirect_uri = _client()
@@ -153,8 +165,12 @@ def complete(code, state):
     if not profile.ok:
         raise ValueError("Não foi possível confirmar a conta Gmail autorizada.")
     email = (profile.json().get("emailAddress") or "").strip().lower()
-    if email != "genau@yoobe.co":
-        raise ValueError("A conta autorizada foi " + (email or "desconhecida") + "; conecte exatamente genau@yoobe.co.")
+    account = db.sender_account(sender)
+    if email != account:
+        raise ValueError("A conta autorizada foi " + (email or "desconhecida") + f"; conecte exatamente {account}.")
+    alias = (sender.get("email") or "").strip().lower()
+    if alias != account and not _can_send_as(access_token, alias):
+        raise ValueError(f"{alias} não está em 'Enviar e-mail como' de {account}. Adicione o alias no Gmail e conecte de novo.")
     _save_record(sid, {
         "refresh_token": refresh_token,
         "access_token": access_token,
@@ -171,7 +187,7 @@ def access_token(sid):
     with _lock:
         record = _read_record(sid)
         if not record or not record.get("refresh_token"):
-            raise RuntimeError("Gmail não conectado. Abra Remetentes e conecte genau@yoobe.co.")
+            raise RuntimeError(f"Gmail não conectado. Abra Remetentes e conecte {db.CAMPAIGN_SENDER_EMAIL}.")
         if int(record.get("expires_at", 0)) <= int(time.time()) + 60:
             creds = Credentials(
                 token=record.get("access_token"),

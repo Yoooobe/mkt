@@ -3258,7 +3258,7 @@ async function vRemetentes() {
   const maxEnv = Math.max(1, ...ss.map(s => s.stats.enviados));
   view.innerHTML = `
     <h2>Remetentes</h2>
-    <p class="muted" style="margin-top:0">Campanhas novas saem somente por <b>genau@yoobe.co</b>. As contas antigas ficam disponíveis para consultar o histórico e sincronizar respostas.</p>
+    <p class="muted" style="margin-top:0">Campanhas novas saem somente por <b>vendas@yoobe.co</b> (alias de contact@yoobe.co). As contas antigas ficam disponíveis para consultar o histórico e sincronizar respostas.</p>
 
     <div class="card">
       <h3>📊 Performance global (todos os remetentes)</h3>

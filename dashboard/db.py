@@ -724,9 +724,25 @@ def sender_get(sid):
     return dict(r) if r else None
 
 
+# Remetente único das campanhas novas (alias) e a caixa Gmail que o autoriza e recebe as respostas.
+CAMPAIGN_SENDER_EMAIL = (os.environ.get("CAMPAIGN_SENDER_EMAIL") or "vendas@yoobe.co").strip().lower()
+CAMPAIGN_SENDER_ACCOUNT = (os.environ.get("CAMPAIGN_SENDER_ACCOUNT") or "contact@yoobe.co").strip().lower()
+
+
+def is_campaign_sender(sender):
+    return bool(sender) and (sender.get("email") or "").strip().lower() == CAMPAIGN_SENDER_EMAIL
+
+
+def sender_account(sender):
+    """Conta Gmail que autentica o remetente (alias → caixa dona do alias)."""
+    email = ((sender or {}).get("email") or "").strip().lower()
+    return CAMPAIGN_SENDER_ACCOUNT if email == CAMPAIGN_SENDER_EMAIL else email
+
+
 def sender_default():
     c = conn()
-    r = c.execute("SELECT * FROM senders WHERE lower(email)='genau@yoobe.co' ORDER BY id DESC LIMIT 1").fetchone()
+    r = c.execute("SELECT * FROM senders WHERE lower(email)=? ORDER BY id DESC LIMIT 1",
+                  (CAMPAIGN_SENDER_EMAIL,)).fetchone()
     c.close()
     return dict(r) if r else None
 

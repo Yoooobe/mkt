@@ -282,7 +282,7 @@ def sender_auth_status(sender):
             err = ((r.get("error") or {}).get("message") or "").strip()
 
     conta_real = (r.get("emailAddress") or "").strip().lower()
-    esperado = (sender.get("email") or "").strip().lower()
+    esperado = db.sender_account(sender)
     if err:
         short = err.split("\n")[0][:160]
         return {"conectado": False, "conta_real": "",
@@ -535,8 +535,8 @@ def _thread_na_caixa(thread_id, home):
 
 def enviar_email(contato, assunto, html, texto_plano, thread_id="", campaign_id=None, etapa="", sender=None):
     import uuid
-    if campaign_id and (sender or {}).get("email", "").strip().lower() != "genau@yoobe.co":
-        raise RuntimeError("Campanhas novas só podem ser enviadas por genau@yoobe.co")
+    if campaign_id and not db.is_campaign_sender(sender):
+        raise RuntimeError(f"Campanhas novas só podem ser enviadas por {db.CAMPAIGN_SENDER_EMAIL}")
     track_id = uuid.uuid4().hex
     utm = {"utm_source": "yoobe-mail", "utm_medium": "email"}
     if campaign_id:
@@ -545,7 +545,7 @@ def enviar_email(contato, assunto, html, texto_plano, thread_id="", campaign_id=
             utm["utm_content"] = f"etapa{etapa}"
     html = inject_tracking(html, track_id, contato["email"], campaign_id, etapa, utm=utm)
     home = gws_home(sender)
-    de = f"{sender['nome']} <{sender['email']}>" if sender else "Yoobe <genau@yoobe.co>"
+    de = f"{sender['nome']} <{sender['email']}>" if sender else f"Yoobe <{db.CAMPAIGN_SENDER_EMAIL}>"
     msg = MIMEMultipart("alternative")
     msg["From"] = de
     msg["Reply-To"] = DEFAULT_REPLY_TO_EMAIL
@@ -941,6 +941,7 @@ def _is_our_message(msg, sender=None, known_msgids=None, sender_emails=None):
     nossos = {str(x or "").strip().lower() for x in (sender_emails or set()) if x}
     if sender and sender.get("email"):
         nossos.add(sender["email"].strip().lower())
+        nossos.add(db.sender_account(sender))
     return bool(frm and frm in nossos)
 
 
@@ -975,7 +976,7 @@ def _responder_lead(reply_to_msg, thread_id, texto, botao=None, sender=None):
         log(f"AUTO-RESPOSTA abortada: assunto bounce ({subj_chk[:60]})")
         return None
     home = gws_home(sender)
-    de = f"{sender['nome']} <{sender['email']}>" if sender else "Yoobe <genau@yoobe.co>"
+    de = f"{sender['nome']} <{sender['email']}>" if sender else f"Yoobe <{db.CAMPAIGN_SENDER_EMAIL}>"
     assinatura = (sender or {}).get("signature_url") or None
     msg = MIMEMultipart("alternative")
     msg["From"] = de
@@ -1541,7 +1542,7 @@ def _h_campaign_send(payload):
         c.close()
         return "item órfão — ignorado"
     sender = db.sender_get(camp["sender_id"] or 0)
-    if not sender or (sender.get("email") or "").strip().lower() != "genau@yoobe.co":
+    if not db.is_campaign_sender(sender):
         c.execute("UPDATE campaign_contacts SET status='pendente',next_send_at=NULL WHERE campaign_id=? AND email=?",
                   (cid, email))
         c.commit()
