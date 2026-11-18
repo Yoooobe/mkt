@@ -2,7 +2,8 @@
 
 Idempotência: integration_events.event_id é a chave; reentrega do mesmo evento devolve
 `duplicate` sem alterar nada. Cada evento atualiza uma oportunidade por orçamento/plano e
-o contato do COMPRADOR. Destinatários das planilhas nunca chegam aqui (o envelope não os
+o contato do COMPRADOR; `catalog.contact_updated` (edição do admin) só corrige o contato e
+reaponta a oportunidade já existente, sem criar nem avançar etapa. Destinatários das planilhas nunca chegam aqui (o envelope não os
 traz) e nada é enviado, ativado ou colocado em campanha por este módulo.
 """
 import hashlib
@@ -61,7 +62,9 @@ STAGES = {
     "corporate.interest_signaled": ("interesse", 1),
 }
 RANK = {stage: rank for stage, rank in STAGES.values()}
-TYPES = set(STAGES)
+# Correção manual do cliente pelo admin do Catálogo: só contato, nunca etapa.
+CONTACT_UPDATED = "catalog.contact_updated"
+TYPES = set(STAGES) | {CONTACT_UPDATED}
 UNITS = {"catalogo", "corporate_platform"}
 TAG_BY_UNIT = {"catalogo": "catalogo_comprador", "corporate_platform": "interesse_corporate"}
 EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -118,7 +121,10 @@ def parse(body: bytes) -> dict:
     if not EMAIL_RE.match(email):
         raise Rejected(422, "comprador_sem_email")
     env["buyer"] = {"email": email, "name": _text(buyer.get("name"), 120),
-                    "company": _text(buyer.get("company"), 160)}
+                    "company": _text(buyer.get("company"), 160),
+                    "phone": _text(buyer.get("phone"), 40)}
+    prev = _text(env.get("previous_email"), 254).lower()
+    env["previous_email"] = prev if EMAIL_RE.match(prev) and prev != email else ""
     env["signals"] = env.get("signals") if isinstance(env.get("signals"), dict) else {}
     env["attribution"] = env.get("attribution") if isinstance(env.get("attribution"), dict) else {}
     return env
@@ -155,6 +161,39 @@ def _upsert_buyer(c, env, tags_str):
               (row["nome"] or b["name"], row["empresa"] or b["company"],
                tags_str(tags + [tag]), b["email"]))
     return "atualizado"
+
+
+def _override_contact(c, env, tags_str):
+    """Edição explícita do admin: nome/empresa/telefone preenchidos sobrescrevem; vazios
+    preservam. Tags só acumulam; supressão/opt-out e o contato do e-mail antigo ficam intactos."""
+    b = env["buyer"]
+    tag = TAG_BY_UNIT[env["business_unit"]]
+    row = c.execute("SELECT tags FROM contacts WHERE email=?", (b["email"],)).fetchone()
+    if not row:
+        c.execute("INSERT INTO contacts(email, nome, empresa, telefone, origem, tags) VALUES(?,?,?,?,?,?)",
+                  (b["email"], b["name"], b["company"], b["phone"], "catalogo", tags_str([tag])))
+        return "criado"
+    tags = [t for t in (row["tags"] or "").split(",") if t.strip()]
+    c.execute("""UPDATE contacts SET nome=CASE WHEN ?<>'' THEN ? ELSE nome END,
+                   empresa=CASE WHEN ?<>'' THEN ? ELSE empresa END,
+                   telefone=CASE WHEN ?<>'' THEN ? ELSE telefone END,
+                   tags=? WHERE email=?""",
+              (b["name"], b["name"], b["company"], b["company"], b["phone"], b["phone"],
+               tags_str(tags + [tag]), b["email"]))
+    return "atualizado"
+
+
+def _relink_opportunity(c, env):
+    """Aponta a oportunidade do orçamento (se existir) para o e-mail/empresa corrigidos,
+    sem criar oportunidade nem mexer em etapa, valor ou sinais."""
+    cur = c.execute("SELECT id FROM opportunities WHERE source=? AND opportunity_key=?",
+                    (env["source"], _opportunity_key(env))).fetchone()
+    if not cur:
+        return None
+    c.execute("""UPDATE opportunities SET email=?, empresa=CASE WHEN ?<>'' THEN ? ELSE empresa END,
+                   updated_at=datetime('now') WHERE id=?""",
+              (env["buyer"]["email"], env["buyer"]["company"], env["buyer"]["company"], cur["id"]))
+    return cur["id"]
 
 
 def _apply(c, env):
@@ -206,15 +245,21 @@ def ingest(c, body: bytes, signature: str, secret: str, tags_str, now=None) -> d
         if done:
             c.execute("ROLLBACK")
             return {"ok": True, "duplicate": True, "opportunity_id": done[0]}
-        contact = _upsert_buyer(c, env, tags_str)
-        opp = _apply(c, env)
+        if env["type"] == CONTACT_UPDATED:
+            contact = _override_contact(c, env, tags_str)
+            opp = _relink_opportunity(c, env)
+            extra = {"previous_email": env["previous_email"]} if env["previous_email"] else {}
+        else:
+            contact = _upsert_buyer(c, env, tags_str)
+            opp = _apply(c, env)
+            extra = {}
         c.execute("""INSERT INTO integration_events(event_id, type, schema_version, source,
                        source_entity, source_entity_id, business_unit, occurred_at, email,
                        opportunity_id, payload) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                   (env["event_id"], env["type"], env["schema_version"], env["source"],
                    env["source_entity"], env["source_entity_id"], env["business_unit"],
                    env["occurred_at"], env["buyer"]["email"], opp,
-                   json.dumps({"signals": env["signals"], "attribution": env["attribution"]},
+                   json.dumps({"signals": env["signals"], "attribution": env["attribution"], **extra},
                               ensure_ascii=False)))
         c.execute("COMMIT")
     except Exception:

@@ -184,6 +184,79 @@ class IntegrationTests(unittest.TestCase):
         self.assertEqual(acks[3]["error"], "assinatura_invalida")
         self.assertEqual(len(q("SELECT * FROM opportunities")), 1)
 
+    def contact_updated(self, **over):
+        base = dict(event_id="catalogo:budget:7:contact_updated:1", type="catalog.contact_updated",
+                    buyer={"email": "ana@cliente-a.test", "name": "Ana Lima", "company": "Cliente A2",
+                           "phone": "+55 11 99999-0000"}, signals={})
+        base.update(over)
+        return event(**base)
+
+    def test_contato_editado_sobrescreve_nome_empresa_sem_criar_oportunidade(self):
+        c = db.conn()
+        c.execute("INSERT INTO contacts(email, nome, empresa, tags, origem) VALUES(?,?,?,?,?)",
+                  ("ana@cliente-a.test", "Ana Souza", "Velha", "cliente_ativo_4unik,descadastrado", "rd"))
+        c.commit()
+        c.close()
+        res = send(self.contact_updated())
+        self.assertEqual((res["contato"], res["opportunity_id"], res["duplicate"]), ("atualizado", None, False))
+        row = q("SELECT * FROM contacts")[0]
+        self.assertEqual((row["nome"], row["empresa"], row["telefone"], row["origem"]),
+                         ("Ana Lima", "Cliente A2", "+55 11 99999-0000", "rd"))
+        self.assertEqual(row["tags"], "cliente_ativo_4unik,descadastrado,catalogo_comprador")
+        self.assertEqual(q("SELECT * FROM opportunities"), [])
+        ev = q("SELECT * FROM integration_events")[0]
+        self.assertEqual((ev["type"], ev["opportunity_id"]), ("catalog.contact_updated", None))
+        self.assertTrue(send(self.contact_updated())["duplicate"])
+        self.assertEqual(len(q("SELECT * FROM integration_events")), 1)
+
+    def test_contato_editado_campos_vazios_preservam(self):
+        send(event())
+        send(self.contact_updated(buyer={"email": "ana@cliente-a.test", "name": "", "company": ""}))
+        row = q("SELECT * FROM contacts")[0]
+        self.assertEqual((row["nome"], row["empresa"]), ("Ana", "Cliente A"))
+        self.assertEqual(q("SELECT empresa FROM opportunities")[0]["empresa"], "Cliente A")
+
+    def test_contato_editado_nao_avanca_etapa_e_atualiza_empresa_da_oportunidade(self):
+        send(event())
+        before = q("SELECT * FROM opportunities")[0]
+        res = send(self.contact_updated())
+        after = q("SELECT * FROM opportunities")
+        self.assertEqual(len(after), 1)
+        self.assertEqual(res["opportunity_id"], before["id"])
+        self.assertEqual((after[0]["stage"], after[0]["stage_at"], after[0]["amount"], after[0]["signals"]),
+                         (before["stage"], before["stage_at"], before["amount"], before["signals"]))
+        self.assertEqual(after[0]["empresa"], "Cliente A2")
+
+    def test_contato_editado_troca_email_mantem_antigo_e_reaponta_oportunidade(self):
+        send(event())
+        res = send(self.contact_updated(
+            event_id="catalogo:budget:7:contact_updated:2", previous_email="ana@cliente-a.test",
+            buyer={"email": "Ana.Lima@Cliente-B.test", "name": "Ana Lima", "company": "Cliente B"}))
+        self.assertEqual(res["contato"], "criado")
+        emails = sorted(r["email"] for r in q("SELECT email FROM contacts"))
+        self.assertEqual(emails, ["ana.lima@cliente-b.test", "ana@cliente-a.test"])
+        old = q("SELECT * FROM contacts WHERE email='ana@cliente-a.test'")[0]
+        self.assertEqual((old["nome"], old["tags"]), ("Ana", "catalogo_comprador"))
+        opp = q("SELECT * FROM opportunities")[0]
+        self.assertEqual((opp["email"], opp["empresa"], opp["stage"]),
+                         ("ana.lima@cliente-b.test", "Cliente B", "orcamento"))
+        ev = q("SELECT * FROM integration_events WHERE type='catalog.contact_updated'")[0]
+        self.assertEqual(json.loads(ev["payload"])["previous_email"], "ana@cliente-a.test")
+
+    def test_contato_editado_valida_email_e_assinatura(self):
+        for body, sig, code in [(self.contact_updated(buyer={"email": "sem"}), None, "comprador_sem_email"),
+                                (self.contact_updated(), "t=1,v1=00", "assinatura_invalida")]:
+            with self.assertRaises(integrations.Rejected) as e:
+                send(body, sig=sig)
+            self.assertEqual(e.exception.code, code)
+        self.assertEqual(q("SELECT * FROM contacts"), [])
+
+    def test_contato_editado_nao_toca_campanhas_fila_nem_envios(self):
+        before = [len(q(f"SELECT * FROM {t}")) for t in ("campaigns", "campaign_contacts", "queue", "sends")]
+        send(self.contact_updated())
+        after = [len(q(f"SELECT * FROM {t}")) for t in ("campaigns", "campaign_contacts", "queue", "sends")]
+        self.assertEqual(before, after)
+
     def test_busca_vazia_nao_confirma(self):
         calls = []
         integrations.pull_once(db.conn, "https://cat.test/e", SECRET, db.tags_str,
